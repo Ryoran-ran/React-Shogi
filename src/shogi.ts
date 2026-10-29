@@ -74,6 +74,8 @@ function applyUnchecked(position: Position, move: Move): Position {
   }
   next.turn = opposite(side); return next;
 }
+/** Search helper: the caller must obtain the move from legalMoveIterator. */
+export function positionAfterLegalMove(position: Position, move: Move): Position { return applyUnchecked(position, move); }
 function* boardMoves(position: Position): Generator<Move> {
   for (let from = 0; from < 81; from++) {
     const p = position.board[from]; if (!p || p.side !== position.turn) continue;
@@ -118,6 +120,7 @@ export class ShogiGame {
   get result(): Result | null { return clone(this.frames.at(-1)!.result); }
   get records(): MoveRecord[] { return clone(this.frames.flatMap(f => f.record ? [f.record] : [])); }
   get moveCount(): number { return this.frames.length - 1; }
+  get positionHistory(): string[] { return this.frames.map(frame => positionKey(frame.position)); }
   play(move: Move): void {
     if (this.result) throw new Error("対局は終了しています");
     const previous = this.position;
