@@ -107,12 +107,50 @@ test("two players move, choose promotion, drop captures, undo, and restore a sav
     await new Promise(resolve => setTimeout(resolve, 300)); expect(workers).toHaveLength(3);
     await click({}, "ai-toggle");
     await new Promise(resolve => setTimeout(resolve, 300)); expect(workers).toHaveLength(4);
+
+    const stopEvent = { target: { closest: () => ({ id: "ai-toggle", dataset: { aiAction: "stop" }, disabled: false }) } };
+    listeners.pointerdown({ ...stopEvent, isPrimary: true, button: 0 });
+    expect(html()).toContain("この1手の後に停止します");
+    expect(html()).toMatch(/id="ai-toggle"[^>]*disabled[^>]*>停止予約済み</);
+    expect(workers[3].terminated).toBe(false);
+    expect(JSON.parse(stored).game.moves).toHaveLength(1);
+    await listeners.click(stopEvent); // The following click must keep the stop request latched.
     workers[3].reply(); expect(JSON.parse(stored).game.moves).toHaveLength(2);
-    await click({}, "ai-toggle");
+    workers[3].reply(); expect(JSON.parse(stored).game.moves).toHaveLength(2);
+    await listeners.click(stopEvent); // A late click on the old stop button must not restart AI.
     await new Promise(resolve => setTimeout(resolve, 300)); expect(workers).toHaveLength(4);
     expect(html()).toContain("停止中");
-    await click({}, "ai-step"); workers[4].onerror?.();
+    expect(html()).not.toContain("停止予約済み");
+
+    // Stopping between moves cancels the timer without starting another worker.
+    await click({}, "ai-toggle");
+    listeners.pointerdown({ ...stopEvent, isPrimary: true, button: 0 });
+    await listeners.click(stopEvent);
+    await new Promise(resolve => setTimeout(resolve, 300)); expect(workers).toHaveLength(4);
+    expect(html()).toContain("停止中");
+    expect(JSON.parse(stored).game.moves).toHaveLength(2);
+
+    // Keyboard clicks also queue a stop, and automatic play can be resumed normally.
+    await click({}, "ai-toggle");
+    await new Promise(resolve => setTimeout(resolve, 300)); expect(workers).toHaveLength(5);
+    await click({ aiAction: "stop" }, "ai-toggle");
+    expect(workers[4].terminated).toBe(false); expect(html()).toContain("停止予約済み");
+    workers[4].reply(); expect(JSON.parse(stored).game.moves).toHaveLength(3);
+    await new Promise(resolve => setTimeout(resolve, 300)); expect(workers).toHaveLength(5);
+    expect(html()).toContain("停止中");
+
+    // Undo must still cancel immediately, even when a graceful stop is pending.
+    await click({}, "ai-step");
+    await click({ aiAction: "stop" }, "ai-toggle");
+    await click({}, "undo"); expect(workers[5].terminated).toBe(true);
+    workers[5].reply(); expect(JSON.parse(stored).game.moves).toHaveLength(2);
+    expect(html()).not.toContain("停止予約済み");
+
+    await click({}, "ai-step");
+    await click({ aiAction: "stop" }, "ai-toggle");
+    workers[6].onerror?.();
     expect(element("#toast").textContent).toContain("AI を起動できませんでした");
     expect(JSON.parse(stored).game.moves).toHaveLength(2);
+    expect(html()).not.toContain("停止予約済み");
   } finally { await change("ai-mode", "human"); Object.assign(globalThis, { Worker: nativeWorker }); }
 });

@@ -10,7 +10,7 @@ let saved = true, loadWarning = "", historyOpen = false, selectedHandIndex = -1;
 let resultOpen = false, resultAnimate = false;
 type AIMode = "human" | "sente" | "gote" | "both";
 type AIStrength = "fast" | "standard";
-let aiMode: AIMode = "human", aiStrength: AIStrength = "fast", aiRunning = false, aiBusy = false, aiStartPly = 0;
+let aiMode: AIMode = "human", aiStrength: AIStrength = "fast", aiRunning = false, aiBusy = false, aiStopRequested = false, aiStartPly = 0;
 let aiWorker: Worker | null = null, aiTimer: ReturnType<typeof setTimeout> | undefined, aiRequestId = 0;
 try { const data = localStorage.getItem(storageKey); if (data) { const parsed = JSON.parse(data); game = ShogiGame.load(parsed.game); flipped = parsed.flipped === true; if (["human", "sente", "gote", "both"].includes(parsed.aiMode)) aiMode = parsed.aiMode; if (["fast", "standard"].includes(parsed.aiStrength)) aiStrength = parsed.aiStrength; } }
 catch { loadWarning = "前回の保存データを読み込めなかったため、初期配置で開きました。"; }
@@ -31,7 +31,14 @@ function restartGame(): void {
 function isAITurn(): boolean { const turn = game.position.turn; return aiMode === "both" || (aiMode === "sente" && turn === "gote") || (aiMode === "gote" && turn === "sente"); }
 function stopAI(): void {
   clearTimeout(aiTimer); aiTimer = undefined; aiRequestId++;
-  aiWorker?.terminate(); aiWorker = null; aiBusy = false; aiRunning = false;
+  aiWorker?.terminate(); aiWorker = null; aiBusy = false; aiRunning = false; aiStopRequested = false;
+}
+function requestAIStop(): void {
+  if (aiStopRequested || (!aiRunning && !aiBusy)) return;
+  clearTimeout(aiTimer); aiTimer = undefined;
+  if (aiBusy) { aiRunning = false; aiStopRequested = true; }
+  else stopAI();
+  render();
 }
 function scheduleAI(): void {
   clearTimeout(aiTimer); aiTimer = undefined;
@@ -48,7 +55,7 @@ function requestAIMove(): void {
     aiWorker = worker; aiBusy = true; selected = null; selectedHandIndex = -1; render();
     worker.onmessage = (event: MessageEvent<AIReply>) => {
       if (aiWorker !== worker || aiRequestId !== id || event.data.id !== id) return;
-      worker.terminate(); aiWorker = null; aiBusy = false;
+      worker.terminate(); aiWorker = null; aiBusy = false; aiStopRequested = false;
       if ("error" in event.data) { stopAI(); render(); notify(`AI を停止しました：${event.data.error}`); return; }
       if (game.result || positionKey(game.position) !== key) { stopAI(); render(); return; }
       const move = event.data.result.move;
@@ -62,8 +69,8 @@ function requestAIMove(): void {
 }
 function aiControls(): string {
   const modes: Array<[AIMode, string]> = [["human", "2人で指す"], ["sente", "自分：先手 / AI：後手"], ["gote", "自分：後手 / AI：先手"], ["both", "AI同士（動作確認）"]];
-  const status = aiBusy ? "AI 思考中…" : aiRunning ? isAITurn() ? "自動実行中" : "自分の手番" : aiMode === "human" ? "" : "停止中";
-  return `<div class="ai-controls"><select id="ai-mode" aria-label="対局モード">${modes.map(([value, label]) => `<option value="${value}" ${aiMode === value ? "selected" : ""}>${label}</option>`).join("")}</select><select id="ai-strength" aria-label="AIの読み"><option value="fast" ${aiStrength === "fast" ? "selected" : ""}>速い</option><option value="standard" ${aiStrength === "standard" ? "selected" : ""}>じっくり</option></select><button id="ai-step" ${aiBusy || pending.length || game.result ? "disabled" : ""}>AIで1手</button><button id="ai-toggle" ${(aiMode === "human" && !aiBusy) || pending.length || game.result ? "disabled" : ""}>${aiRunning || aiBusy ? "■ 停止" : "▶ 自動開始"}</button><span class="ai-status ${aiBusy ? "thinking" : ""}" role="status">${status}</span></div>`;
+  const status = aiStopRequested ? "この1手の後に停止します" : aiBusy ? "AI 思考中…" : aiRunning ? isAITurn() ? "自動実行中" : "自分の手番" : aiMode === "human" ? "" : "停止中";
+  return `<div class="ai-controls"><select id="ai-mode" aria-label="対局モード">${modes.map(([value, label]) => `<option value="${value}" ${aiMode === value ? "selected" : ""}>${label}</option>`).join("")}</select><select id="ai-strength" aria-label="AIの読み"><option value="fast" ${aiStrength === "fast" ? "selected" : ""}>速い</option><option value="standard" ${aiStrength === "standard" ? "selected" : ""}>じっくり</option></select><button id="ai-step" ${aiBusy || pending.length || game.result ? "disabled" : ""}>AIで1手</button><button id="ai-toggle" data-ai-action="${aiRunning || aiBusy ? "stop" : "start"}" ${aiStopRequested || (aiMode === "human" && !aiBusy) || pending.length || game.result ? "disabled" : ""}>${aiStopRequested ? "停止予約済み" : aiRunning || aiBusy ? "■ 停止" : "▶ 自動開始"}</button><span class="ai-status ${aiBusy ? "thinking" : ""}" role="status">${status}</span></div>`;
 }
 function resultText(): string {
   const r = game.result; if (!r) return "";
@@ -114,6 +121,12 @@ function promotionDialog() {
   const p = game.position.board[pending[0].from!]!;
   return `<div class="modal-backdrop"><section class="promotion-dialog" role="dialog" aria-modal="true" aria-labelledby="promotion-title"><span class="eyebrow">PROMOTION</span><h2 id="promotion-title">${PIECE_NAMES[p.type]}を成りますか？</h2><p>成ると、駒の動きが変わります。</p><div class="promotion-options"><button data-promote="yes">${pieceHTML({ ...p, promoted: true })}<strong>成る</strong></button><button data-promote="no">${pieceHTML(p)}<strong>成らない</strong></button></div><button id="cancel-promotion" class="text-button">戻る</button></section></div>`;
 }
+// Latch stop on press so a render between pointerdown and click cannot lose it.
+document.addEventListener("pointerdown", e => {
+  if (!e.isPrimary || e.button !== 0 || resultOpen || pending.length) return;
+  const b = (e.target as HTMLElement).closest("button") as HTMLButtonElement | null;
+  if (b?.id === "ai-toggle" && !b.disabled && b.dataset.aiAction === "stop") requestAIStop();
+});
 document.addEventListener("click", e => {
   const b = (e.target as HTMLElement).closest("button") as HTMLButtonElement | null; if (!b || b.disabled) return;
   if (resultOpen && !["result-close", "result-view-board", "result-restart", "result-export"].includes(b.id)) return;
@@ -145,7 +158,11 @@ document.addEventListener("click", e => {
       case "show-result": presentResult(false); render(); break;
       case "result-restart": restartGame(); break;
       case "ai-step": stopAI(); requestAIMove(); break;
-      case "ai-toggle": if (aiRunning || aiBusy) stopAI(); else { aiRunning = true; aiStartPly = game.moveCount; } render(); scheduleAI(); break;
+      case "ai-toggle":
+        // The original stop button may receive its click after the AI has stopped.
+        if (b.dataset.aiAction === "stop" || aiRunning || aiBusy) requestAIStop();
+        else { aiRunning = true; aiStartPly = game.moveCount; render(); scheduleAI(); }
+        break;
       case "flip": flipped = !flipped; persist(); render(); break;
       case "open-history": historyOpen = true; render(); $("#close-history").focus(); break;
       case "close-history": case "history-backdrop": historyOpen = false; render(); $("#open-history").focus(); break;
