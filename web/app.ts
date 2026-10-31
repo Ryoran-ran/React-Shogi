@@ -15,11 +15,13 @@ import { ScriptEditor } from "../src/scripteditor";
 import { createSetup, copySetup, availableSetupName, loadSetup, readLocalSetups, saveLocalSetup, removeLocalSetup, setupFilename, MAX_SETUP_NAME_LENGTH } from "../src/setups";
 import type { SavedSetup, LocalSetup } from "../src/setups";
 import type { AIReply, AIRequest } from "../src/ai";
+import { getSpecialGame, assertSpecialActionAvailable } from "../src/special";
+import { renderSpecialScreen } from "../src/specialview";
 
 const $ = (s: string) => document.querySelector(s) as HTMLElement;
 const esc = (v: unknown) => String(v ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]!));
 const storageKey = "shogi-game.v1";
-type Screen = "title" | "workshop" | "game";
+type Screen = "title" | "workshop" | "special" | "game";
 type GameKind = "standard" | "custom";
 let screen: Screen = "title", screenVersion = 0, workshopAction: "edit" | "play" = "play", editorReturn: "game" | "workshop" = "game";
 let gameKind: GameKind = "standard", gameName = "普通の将棋", hasGameSession = false;
@@ -199,6 +201,7 @@ function render() {
   if (editor) { if (scriptEditor) $("#app").innerHTML = scriptEditor.render(); else if (pieceEditor) renderPieceEditorScreen(); else renderEditor(); saveDraftNow(); return; }
   if (screen === "title") { renderTitle(); return; }
   if (screen === "workshop") { renderWorkshop(); return; }
+  if (screen === "special") { $("#app").innerHTML = renderSpecialScreen(); return; }
   const position = game.position, rules = game.pieceRules, records = game.records, result = game.result, check = !result && inCheck(position, position.turn, rules);
   const automaticOpponent = isHumanAIMode() && !aiPaused;
   const undoDisabled = !records.length && !result || automaticOpponent && !result && !records.some(record => record.side === aiMode);
@@ -239,6 +242,11 @@ function openWorkshop(action: "edit" | "play" = "play"): void {
   stopAI(); editor = null; pieceEditor = null; scriptEditor = null; editorBoardScroll = null; selected = null; pending = []; historyOpen = false; resultOpen = false;
   workshopAction = action; setScreen("workshop"); refreshSavedSetups(); render();
 }
+function openSpecial(): void {
+  stopAI(); editor = null; pieceEditor = null; scriptEditor = null; editorBoardScroll = null;
+  selected = null; selectedHandIndex = -1; pending = []; historyOpen = false; resultOpen = false;
+  setScreen("special"); render(); $(".special-heading h1").focus();
+}
 function startMatch(setup: SavedSetup, kind: GameKind): boolean {
   const issues = setupIssues(setup.position, setup.pieceRules, setup.ruleScript); if (issues.length) throw new Error(issues[0]);
   if (hasGameSession && (game.moveCount || game.result || gameKind === "custom") && !confirm("現在の対局を置き換えて、新しい対局を始めますか？")) return false;
@@ -260,7 +268,13 @@ function handleMenuClick(button: HTMLButtonElement): void {
   if (screen === "title") {
     if (button.id === "title-standard") startMatch(createSetup(initialPosition(), 0, "普通の将棋"), "standard");
     else if (button.id === "title-workshop") openWorkshop();
+    else if (button.id === "title-special") openSpecial();
     else if (button.id === "title-continue") continueGame();
+    return;
+  }
+  if (screen === "special") {
+    if (button.dataset.specialEdit) assertSpecialActionAvailable(getSpecialGame(button.dataset.specialEdit), "edit");
+    if (button.dataset.specialPlay) assertSpecialActionAvailable(getSpecialGame(button.dataset.specialPlay), "play");
     return;
   }
   if (button.dataset.workshopEdit) { const entry = storedSetup(button.dataset.workshopEdit); openEditor(entry.setup, "workshop", entry.id); return; }
@@ -296,9 +310,10 @@ async function importWorkshopSetup(input: HTMLInputElement): Promise<void> {
 }
 function renderTitle(): void {
   $("#app").innerHTML = `<header class="site-header menu-header"><div class="brand"><span class="brand-icon">将</span><span>将棋<small>BOARD GAME MAKER</small></span></div><span class="menu-header-note">いつもの一局から、自分だけの盤面まで。</span></header>
-    <main class="title-main"><div class="title-heading"><p class="menu-eyebrow">SHOGI / LOCAL PLAY</p><h1>遊び方を選んでください</h1><p>普通の将棋を指す。盤面をつくって遊ぶ。</p></div>${draftRecoveryHTML()}<div class="title-choices">
+    <main class="title-main"><div class="title-heading"><p class="menu-eyebrow">BOARD GAMES / LOCAL PLAY</p><h1>遊び方を選んでください</h1><p>普通の将棋、盤面づくり、Special。</p></div>${draftRecoveryHTML()}<div class="title-choices">
     <section class="title-choice standard-choice"><span class="menu-emblem" aria-hidden="true">将</span><span class="menu-eyebrow">STANDARD</span><h2>普通の将棋</h2><p>9×9の平手で、新しい対局を始めます。<br>2人でも、AI相手でも遊べます。</p><button id="title-standard" class="menu-primary">普通の将棋で遊ぶ <span aria-hidden="true">→</span></button><small>通常のルール・パスなし</small></section>
-    <section class="title-choice custom-choice"><span class="menu-emblem" aria-hidden="true">編</span><span class="menu-eyebrow">CREATE & PLAY</span><h2>エディットで遊ぶ</h2><p>盤面の大きさや駒の配置・動きを変えて、<br>自分だけの将棋をつくれます。</p><button id="title-workshop" class="menu-primary">エディットで遊ぶ <span aria-hidden="true">→</span></button><small>新規作成・保存した配置の編集・遊ぶ</small></section></div>
+    <section class="title-choice custom-choice"><span class="menu-emblem" aria-hidden="true">編</span><span class="menu-eyebrow">CREATE & PLAY</span><h2>エディットで遊ぶ</h2><p>盤面の大きさや駒の配置・動きを変えて、<br>自分だけの将棋をつくれます。</p><button id="title-workshop" class="menu-primary">エディットで遊ぶ <span aria-hidden="true">→</span></button><small>新規作成・保存した配置の編集・遊ぶ</small></section>
+    <section class="title-choice special-choice"><span class="menu-emblem" aria-hidden="true">S</span><span class="menu-eyebrow">SPECIAL</span><h2>Special</h2><p>チェスなど、専用ルールのゲームを<br>追加していくモードです。</p><button id="title-special" class="menu-primary">Specialを開く <span aria-hidden="true">→</span></button><small>ゲームの追加予定・編集できる範囲</small></section></div>
     ${hasGameSession ? `<section class="continue-card" aria-label="前回の対局"><div><span class="menu-eyebrow">CONTINUE</span><strong>${esc(gameName)}</strong><p>${game.position.width}×${game.position.height}盤・${game.moveCount}手${game.result ? "・終局済み" : `・${SIDE_NAMES[game.position.turn]}の手番`}</p></div><button id="title-continue">${game.result ? "前回の対局を見る" : "対局の続きから"} <span aria-hidden="true">→</span></button></section>` : ""}</main>`;
 }
 function setupPreview(position: Position, rules?: PieceRules): string {
@@ -701,7 +716,7 @@ document.addEventListener("keydown", e => {
     }
     return;
   }
-  if (screen !== "game") { if (screen === "workshop" && key.key === "Escape") { key.preventDefault(); goTitle(); } return; }
+  if (screen !== "game") { if ((screen === "workshop" || screen === "special") && key.key === "Escape") { key.preventDefault(); goTitle(); } return; }
   if (resultOpen) {
     if (key.key === "Escape") { key.preventDefault(); dismissResult(); }
     else if (key.key === "Tab") {
