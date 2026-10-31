@@ -1,32 +1,35 @@
-import { HAND_TYPES, canPromote, pieceState, loadPieceRules, pieceDefinition, pieceTypes, handTypes, isBuiltinPiece, hasPieceLibrary, hasPieceScripts, hasRuleScripts } from "./pieces";
+import { HAND_TYPES, canPromote, pieceState, loadPieceRules, pieceDefinition, pieceTypes, handTypes, isBuiltinPiece, hasPieceLibrary, hasPieceScripts, hasRuleScripts, isRoyal, royalTypes, hasPieceProperties, withInitialData } from "./pieces";
+import { boardSettings, loadBoardSettings } from "./boardsettings";
+import type { BoardSettings } from "./boardsettings";
 import type { PieceType, HandType, PieceRules } from "./pieces";
 import { pieceDestinations, traceMovement } from "./movement";
 import { loadRuleScript, validateRuleScript, runRuleScript, validateScriptData, validateRuleState } from "./rulescript";
-import type { ScriptData, RuleState, RuleChoice } from "./rulescript";
+import type { ScriptData, RuleState, RuleChoice, RuleTrace } from "./rulescript";
 export { PIECE_TYPES, HAND_TYPES, PIECE_NAMES, PIECE_LABELS, canPromote, pieceState } from "./pieces";
 export type { PieceType, HandType } from "./pieces";
 
 export type Side = "sente" | "gote";
 export interface Piece { type: PieceType; side: Side; promoted: boolean; data?: ScriptData }
-export interface Position { width: number; height: number; board: Array<Piece | null>; hands: Record<Side, Record<HandType, number>>; turn: Side; ruleState?: RuleState }
+export interface Position { width: number; height: number; board: Array<Piece | null>; hands: Record<Side, Record<HandType, number>>; turn: Side; ruleState?: RuleState; settings?: BoardSettings }
 export interface Move { from?: number; drop?: HandType; to: number; promote: boolean; choices?: string[] }
 export interface PassMove { pass: true; choices?: string[] }
 export type GameMove = Move | PassMove;
 export type PassAllowance = Record<Side, number | null>;
-export interface GameOptions { passLimit?: number | null; pieceRules?: PieceRules; ruleScript?: string }
+export interface GameOptions { passLimit?: number | null; pieceRules?: PieceRules; ruleScript?: string; trace?: boolean }
 export interface Result { reason: "mate" | "noMoves" | "repetition" | "perpetualCheck" | "resign" | "agreement" | "script"; winner: Side | null }
-export interface MoveRecord { move: GameMove; side: Side; notation: string; check: boolean; effects?: string[] }
+export interface MoveRecord { move: GameMove; side: Side; notation: string; check: boolean; effects?: string[]; trace?: RuleTrace[] }
 interface Frame { position: Position; record: MoveRecord | null; result: Result | null; passesUsed: Record<Side, number> }
-export interface SavedGame { version: 1 | 2 | 3 | 4 | 5 | 6 | 7; moves: GameMove[]; passLimit?: number | null; initialPosition?: Position; pieceRules?: PieceRules; ruleScript?: string; ending?: "resign" | "agreement" }
+export interface SavedGame { version: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8; moves: GameMove[]; passLimit?: number | null; initialPosition?: Position; pieceRules?: PieceRules; ruleScript?: string; ending?: "resign" | "agreement" }
 export const isPassMove = (move: GameMove): move is PassMove => "pass" in move && move.pass === true;
 export const SIDE_NAMES = { sente: "先手", gote: "後手" };
 export const MIN_BOARD_SIZE = 3, MAX_BOARD_SIZE = 15;
 export const opposite = (side: Side): Side => side === "sente" ? "gote" : "sente";
 export function pieceLabel(p: Piece, rules?: PieceRules): string { const state = pieceState(p, rules); return p.side === "gote" ? state.goteLabel ?? state.label : state.label; }
 export function pieceName(p: Piece, rules?: PieceRules): string { const state = pieceState(p, rules); return p.side === "gote" ? state.goteName ?? state.name : state.name; }
-export const promotionDepth = (height: number) => Math.min(3, Math.floor(height / 3));
-const zone = (position: Position, side: Side, y: number) => side === "sente" ? y < promotionDepth(position.height) : y >= position.height - promotionDepth(position.height);
+export const promotionDepth = (height: number, configured?: number | null) => configured === null || configured === undefined ? Math.min(3, Math.floor(height / 3)) : Math.min(height, configured);
+const zone = (position: Position, side: Side, y: number) => side === "sente" ? y < promotionDepth(position.height, boardSettings(position).promotionDepth) : y >= position.height - promotionDepth(position.height, boardSettings(position).promotionDepth);
 const forcedPromotion = (position: Position, p: Piece, y: number, rules?: PieceRules) => {
+  if (boardSettings(position).promotionDepth === 0) return false;
   const ranks = pieceDefinition(p.type, rules).promotion?.forcedRanks ?? 0;
   return (p.side === "sente" ? y : position.height - 1 - y) < ranks;
 };
@@ -44,6 +47,7 @@ export function emptyPosition(width = 9, height = 9): Position {
 export function validatePosition(data: unknown, rules?: PieceRules): asserts data is Position {
   if (!data || typeof data !== "object") throw new Error("盤面の設定が壊れています");
   const p = data as Position;
+  if (p.settings !== undefined) loadBoardSettings(p.settings);
   validateBoardSize(p.width, p.height);
   if (!Array.isArray(p.board) || p.board.length !== p.width * p.height || !["sente", "gote"].includes(p.turn)) throw new Error("盤面の設定が壊れています");
   const types = pieceTypes(rules), handPieces = handTypes(rules);
@@ -56,8 +60,9 @@ export function validatePosition(data: unknown, rules?: PieceRules): asserts dat
     const hand = p.hands?.[side];
     if (!hand || typeof hand !== "object" || Array.isArray(hand) || Object.keys(hand).some(type => !handPieces.includes(type as HandType))) throw new Error("持ち駒の設定が壊れています");
     for (const type of handPieces) {
-      const count = isBuiltinPiece(type) ? hand[type] : hand[type] ?? 0;
+      const count = isBuiltinPiece(type) && type !== "K" ? hand[type] : hand[type] ?? 0;
       if (!Number.isSafeInteger(count) || count < 0 || count > MAX_BOARD_SIZE * MAX_BOARD_SIZE) throw new Error("持ち駒の設定が壊れています");
+      if (isRoyal(type, rules) && count > 0) throw new Error("王の役割を持つ駒は持ち駒にできません");
     }
   }
   if (p.ruleState !== undefined) validateRuleState(p.ruleState);
@@ -65,8 +70,8 @@ export function validatePosition(data: unknown, rules?: PieceRules): asserts dat
 export function setupIssues(position: Position, rules?: PieceRules, ruleScript = ""): string[] {
   validatePosition(position, rules);
   const issues: string[] = [];
-  for (const side of ["sente", "gote"] as Side[]) {
-    const kings = position.board.filter(p => p?.type === "K" && p.side === side).length;
+  for (const side of royalTypes(rules).length ? ["sente", "gote"] as Side[] : []) {
+    const kings = position.board.filter(p => p && isRoyal(p.type, rules) && p.side === side).length;
     if (kings !== 1) issues.push(`${SIDE_NAMES[side]}の王・玉を1枚配置してください（現在${kings}枚）`);
   }
   if (!issues.length && inCheck(position, opposite(position.turn), rules)) issues.push("手番ではない側の王・玉が王手を受けています。配置または最初の手番を変更してください");
@@ -91,31 +96,37 @@ export function attacks(position: Position, from: number, rules?: PieceRules): n
   return traceMovement(position, from, pieceState(p, rules).captures);
 }
 export function inCheck(position: Position, side = position.turn, rules?: PieceRules): boolean {
-  const king = position.board.findIndex(p => p?.type === "K" && p.side === side);
-  if (king < 0) return true;
-  return position.board.some((p, index) => p?.side === opposite(side) && attacks(position, index, rules).includes(king));
+  if (!boardSettings(position).selfCheck || !royalTypes(rules).length) return false;
+  const kings = position.board.flatMap((p, index) => p && isRoyal(p.type, rules) && p.side === side ? [index] : []);
+  if (!kings.length) return true;
+  return position.board.some((p, index) => p?.side === opposite(side) && attacks(position, index, rules).some(to => kings.includes(to)));
 }
-function applyUnchecked(position: Position, move: GameMove): Position {
+export function royalResult(position: Position, rules?: PieceRules): Result | null {
+  if (!royalTypes(rules).length) return null;
+  const present = (["sente", "gote"] as Side[]).map(side => position.board.some(piece => piece?.side === side && isRoyal(piece.type, rules)));
+  return present.every(Boolean) ? null : { reason: "script", winner: present[0] ? "sente" : present[1] ? "gote" : null };
+}
+function applyUnchecked(position: Position, move: GameMove, rules?: PieceRules): Position {
   const next = clone(position), side = position.turn;
   if (isPassMove(move)) { next.turn = opposite(side); return next; }
-  if (move.drop) { next.hands[side][move.drop]--; next.board[move.to] = { type: move.drop, side, promoted: false }; }
+  if (move.drop) { next.hands[side][move.drop]--; next.board[move.to] = withInitialData({ type: move.drop, side, promoted: false }, rules); }
   else {
     const p = next.board[move.from!]!, captured = next.board[move.to];
-    if (captured && captured.type !== "K") next.hands[side][captured.type] = (next.hands[side][captured.type] ?? 0) + 1;
+    if (captured && !isRoyal(captured.type, rules) && boardSettings(position).useHands) next.hands[side][captured.type] = (next.hands[side][captured.type] ?? 0) + 1;
     next.board[move.from!] = null; next.board[move.to] = { ...p, promoted: p.promoted || move.promote };
   }
   next.turn = opposite(side); return next;
 }
 /** Search helper: the caller must obtain the move from a legal move/action iterator. */
 export function positionAfterLegalMove(position: Position, move: GameMove, rules: PieceRules = {}, ruleScript = ""): Position {
-  if (!hasRuleScripts(ruleScript, rules)) return applyUnchecked(position, move);
+  if (!hasRuleScripts(ruleScript, rules)) return applyUnchecked(position, move, rules);
   const outcome = runRuleScript(ruleScript, position, rules, move);
   if (!outcome.position) throw new Error(outcome.rejected ?? "ルールの選択を完了してください");
   validatePosition(outcome.position, rules); return outcome.position;
 }
 export function ruleChoiceForMove(position: Position, move: GameMove, rules: PieceRules, ruleScript: string): RuleChoice | undefined { return runRuleScript(ruleScript, position, rules, move).choice; }
 function* expandedMoves<T extends GameMove>(position: Position, move: T, rules: PieceRules = {}, ruleScript = ""): Generator<{ move: T; next: Position }> {
-  if (!hasRuleScripts(ruleScript, rules)) { yield { move, next: applyUnchecked(position, move) }; return; }
+  if (!hasRuleScripts(ruleScript, rules)) { yield { move, next: applyUnchecked(position, move, rules) }; return; }
   let branches = 0;
   function* expand(candidate: T): Generator<{ move: T; next: Position }> {
     if (++branches > 128) throw new Error("1手のルール選択の組み合わせが多すぎます");
@@ -131,28 +142,31 @@ function* boardMoves(position: Position, rules?: PieceRules, ruleScript = ""): G
   for (let from = 0; from < position.board.length; from++) {
     const p = position.board[from]; if (!p || p.side !== position.turn) continue;
     for (const to of pieceDestinations(position, from, pieceState(p, rules))) {
-      const target = position.board[to]; if (target && (target.side === p.side || target.type === "K")) continue;
+      const target = position.board[to]; if (target && (target.side === p.side || (isRoyal(target.type, rules) && boardSettings(position).selfCheck))) continue;
       const y = Math.floor(to / position.width), promotion = !p.promoted && canPromote(p.type, rules) && (zone(position, p.side, Math.floor(from / position.width)) || zone(position, p.side, y));
       for (const promote of promotion ? forcedPromotion(position, p, y, rules) ? [true] : [false, true] : [false]) {
-        for (const { move, next } of expandedMoves(position, { from, to, promote }, rules, ruleScript)) if ((hasRuleScripts(ruleScript, rules) && next.ruleState?.result) || !inCheck(next, p.side, rules)) yield move;
+        for (const { move, next } of expandedMoves(position, { from, to, promote }, rules, ruleScript)) if ((hasRuleScripts(ruleScript, rules) && next.ruleState?.result) || royalResult(next, rules) || !inCheck(next, p.side, rules)) yield move;
       }
     }
   }
 }
 export function* legalMoveIterator(position: Position, rules?: PieceRules, ruleScript = ""): Generator<Move> {
   if (hasRuleScripts(ruleScript, rules) && position.ruleState?.result) return;
+  if (royalResult(position, rules)) return;
   yield* boardMoves(position, rules, ruleScript);
+  if (!boardSettings(position).useHands) return;
   const side = position.turn;
   for (const drop of handTypes(rules)) {
+    if (isRoyal(drop, rules)) continue;
     if (!position.hands[side][drop]) continue;
     for (let to = 0; to < position.board.length; to++) {
       if (position.board[to]) continue;
       const x = to % position.width, y = Math.floor(to / position.width), p: Piece = { type: drop, side, promoted: false };
       if (forcedPromotion(position, p, y, rules)) continue;
-      if (drop === "P" && position.board.some((piece, i) => i % position.width === x && piece?.side === side && piece.type === "P" && !piece.promoted)) continue;
+      if (boardSettings(position).nifu && drop === "P" && position.board.some((piece, i) => i % position.width === x && piece?.side === side && piece.type === "P" && !piece.promoted)) continue;
       for (const { move, next } of expandedMoves<Move>(position, { drop, to, promote: false }, rules, ruleScript)) {
         if (!(hasRuleScripts(ruleScript, rules) && next.ruleState?.result) && inCheck(next, side, rules)) continue;
-        if (!(hasRuleScripts(ruleScript, rules) && next.ruleState?.result) && drop === "P" && attacks(next, to, rules).some(i => next.board[i]?.type === "K" && next.board[i]?.side === next.turn) && legalMoveIterator(next, rules, ruleScript).next().done) continue;
+        if (boardSettings(position).selfCheck && boardSettings(position).pawnDropMate && !(hasRuleScripts(ruleScript, rules) && next.ruleState?.result) && drop === "P" && attacks(next, to, rules).some(i => next.board[i] && isRoyal(next.board[i]!.type, rules) && next.board[i]?.side === next.turn) && legalMoveIterator(next, rules, ruleScript).next().done) continue;
         yield move;
       }
     }
@@ -163,15 +177,16 @@ export function canPass(position: Position, remaining: PassAllowance, rules?: Pi
   return (remaining[position.turn] === null || remaining[position.turn]! > 0) && !inCheck(position, position.turn, rules);
 }
 export function* legalActionIterator(position: Position, remaining?: PassAllowance, rules?: PieceRules, ruleScript = ""): Generator<GameMove> {
+  if (royalResult(position, rules)) return;
   if (hasRuleScripts(ruleScript, rules) && position.ruleState?.result) return;
   yield* legalMoveIterator(position, rules, ruleScript);
   if (remaining && canPass(position, remaining, rules)) for (const { move, next } of expandedMoves<PassMove>(position, { pass: true }, rules, ruleScript)) if ((hasRuleScripts(ruleScript, rules) && next.ruleState?.result) || !inCheck(next, position.turn, rules)) yield move;
 }
 export function positionKey(position: Position, remaining?: PassAllowance): string {
   const passKey = remaining && (remaining.sente !== null || remaining.gote !== null) ? `|pass:${remaining.sente ?? "-"},${remaining.gote ?? "-"}` : "";
-  const customHands = [...new Set([...Object.keys(position.hands.sente), ...Object.keys(position.hands.gote)])].filter(type => !isBuiltinPiece(type) && ((position.hands.sente[type as HandType] ?? 0) > 0 || (position.hands.gote[type as HandType] ?? 0) > 0)).sort();
+  const customHands = [...new Set([...Object.keys(position.hands.sente), ...Object.keys(position.hands.gote)])].filter(type => !HAND_TYPES.includes(type as typeof HAND_TYPES[number]) && ((position.hands.sente[type as HandType] ?? 0) > 0 || (position.hands.gote[type as HandType] ?? 0) > 0)).sort();
   const customKey = customHands.length ? `|custom:${customHands.map(type => `${type}:${position.hands.sente[type as HandType] ?? 0}:${position.hands.gote[type as HandType] ?? 0}`).join(",")}` : "";
-  const dataKey = position.ruleState || position.board.some(piece => piece?.data) ? `|rule:${JSON.stringify([position.ruleState, position.board.map(piece => piece?.data ?? null)])}` : "";
+  const dataKey = position.ruleState || position.settings || position.board.some(piece => piece?.data) ? `|rule:${JSON.stringify([position.ruleState, position.board.map(piece => piece?.data ?? null), position.settings])}` : "";
   return `${position.width}x${position.height}|${position.turn}|${position.board.map(p => p ? `${p.side[0]}${p.type}${p.promoted ? "+" : ""}` : ".").join(",")}|${(["sente", "gote"] as Side[]).map(side => HAND_TYPES.map(t => position.hands[side][t]).join(",")).join("|")}${passKey}${customKey}${dataKey}`;
 }
 function notation(position: Position, move: GameMove, rules?: PieceRules): string {
@@ -188,16 +203,21 @@ export class ShogiGame {
   private configuredPieceRules: PieceRules;
   private configuredRuleScript: string;
   private startingPosition: Position;
+  readonly traceEnabled: boolean;
+  private startTrace: RuleTrace[] = [];
+  private attemptTrace: RuleTrace[] = [];
   constructor(position = initialPosition(), options: GameOptions = {}) {
+    this.traceEnabled = options.trace === true;
     this.configuredPieceRules = loadPieceRules(options.pieceRules);
     this.configuredRuleScript = loadRuleScript(options.ruleScript); validateRuleScript(this.configuredRuleScript, this.configuredPieceRules);
     validatePosition(position, this.configuredPieceRules);
     this.startingPosition = clone(position);
     const limit = options.passLimit === undefined ? null : options.passLimit;
     validatePassLimit(limit); this.configuredPassLimit = limit;
-    let start = clone(position);
+    let start = clone(position); start.board = start.board.map(piece => piece ? withInitialData(piece, this.configuredPieceRules) : null);
     if (this.hasScripts) {
-      const outcome = runRuleScript(this.ruleScript, start, this.configuredPieceRules);
+      const outcome = runRuleScript(this.ruleScript, start, this.configuredPieceRules, undefined, this.traceEnabled);
+      this.startTrace = outcome.trace ?? [];
       if (!outcome.position) throw new Error(outcome.rejected ?? "対局開始時のルールでは選択を要求できません");
       start = outcome.position; validatePosition(start, this.configuredPieceRules);
     }
@@ -207,6 +227,8 @@ export class ShogiGame {
   get pieceRules(): PieceRules { return clone(this.configuredPieceRules); }
   get ruleScript(): string { return this.configuredRuleScript; }
   get hasScripts(): boolean { return hasRuleScripts(this.ruleScript, this.configuredPieceRules); }
+  get initialTrace(): RuleTrace[] { return clone(this.startTrace); }
+  get lastTrace(): RuleTrace[] { return clone(this.attemptTrace); }
   private remainingPasses(frame: Frame): PassAllowance {
     return { sente: this.passLimit === null ? null : this.passLimit - frame.passesUsed.sente, gote: this.passLimit === null ? null : this.passLimit - frame.passesUsed.gote };
   }
@@ -226,6 +248,7 @@ export class ShogiGame {
   pass(): void { this.play({ pass: true }); }
   get passMoves(): PassMove[] { return this.canPass ? [...expandedMoves<PassMove>(this.position, { pass: true }, this.configuredPieceRules, this.ruleScript)].filter(item => item.next.ruleState?.result || !inCheck(item.next, this.position.turn, this.configuredPieceRules)).map(item => item.move) : []; }
   play(move: GameMove): void {
+    this.attemptTrace = [];
     if (this.result) throw new Error("対局は終了しています");
     const previous = this.position;
     if (move.choices !== undefined && (!Array.isArray(move.choices) || move.choices.length > 4 || move.choices.some(value => typeof value !== "string" || value.length > 80))) throw new Error("ルールの選択記録が壊れています");
@@ -241,13 +264,15 @@ export class ShogiGame {
       if (!found) throw new Error("その手は指せません");
     }
     const next = positionAfterLegalMove(previous, move, this.configuredPieceRules, this.ruleScript), check = !(this.hasScripts && next.ruleState?.result) && inCheck(next, next.turn, this.configuredPieceRules);
-    const effects = this.hasScripts ? runRuleScript(this.ruleScript, previous, this.configuredPieceRules, move).effects : undefined;
-    const record: MoveRecord = { move: clone(move), side: previous.turn, notation: notation(previous, move, this.configuredPieceRules), check, ...(effects?.length ? { effects } : {}) };
+    const outcome = this.hasScripts ? runRuleScript(this.ruleScript, previous, this.configuredPieceRules, move, this.traceEnabled) : undefined;
+    this.attemptTrace = outcome?.trace ?? [];
+    const effects = outcome?.effects;
+    const record: MoveRecord = { move: clone(move), side: previous.turn, notation: notation(previous, move, this.configuredPieceRules), check, ...(effects?.length ? { effects } : {}), ...(this.traceEnabled ? { trace: this.attemptTrace } : {}) };
     const passesUsed = { ...this.frames.at(-1)!.passesUsed };
     if (isPassMove(move)) passesUsed[previous.turn]++;
-    const frame: Frame = { position: next, record, result: this.hasScripts ? next.ruleState?.result ?? null : null, passesUsed };
+    const frame: Frame = { position: next, record, result: (this.hasScripts ? next.ruleState?.result : null) ?? royalResult(next, this.configuredPieceRules), passesUsed };
     if (!frame.result && legalActionIterator(next, this.remainingPasses(frame), this.configuredPieceRules, this.ruleScript).next().done) frame.result = { reason: check ? "mate" : "noMoves", winner: previous.turn };
-    this.frames.push(frame);
+    this.frames.push(frame); this.attemptTrace = [];
     if (frame.result) return;
     else {
       const key = positionKey(next, this.passesRemaining), matches = this.frames.flatMap((f, i) => positionKey(f.position, this.remainingPasses(f)) === key ? [i] : []);
@@ -259,6 +284,7 @@ export class ShogiGame {
     }
   }
   undo(): boolean {
+    this.attemptTrace = [];
     const current = this.frames.at(-1)!;
     if (current.result?.reason === "resign" || current.result?.reason === "agreement") { current.result = null; return true; }
     if (this.frames.length === 1) return false;
@@ -266,13 +292,14 @@ export class ShogiGame {
   }
   resign(): void { if (!this.result) this.frames.at(-1)!.result = { reason: "resign", winner: opposite(this.position.turn) }; }
   agreeDraw(): void { if (!this.result) this.frames.at(-1)!.result = { reason: "agreement", winner: null }; }
-  save(): SavedGame { const reason = this.result?.reason, custom = Object.keys(this.configuredPieceRules).length > 0; return { version: hasPieceScripts(this.configuredPieceRules) ? 7 : this.ruleScript ? 6 : hasPieceLibrary(this.configuredPieceRules) ? 5 : custom ? 4 : 3, initialPosition: this.initialPosition, passLimit: this.passLimit, ...(custom || this.ruleScript ? { pieceRules: this.pieceRules } : {}), ...(this.ruleScript ? { ruleScript: this.ruleScript } : {}), moves: this.records.map(r => r.move), ...((reason === "resign" || reason === "agreement") ? { ending: reason } : {}) }; }
+  save(): SavedGame { const reason = this.result?.reason, custom = Object.keys(this.configuredPieceRules).length > 0; return { version: this.initialPosition.settings || hasPieceProperties(this.configuredPieceRules) ? 8 : hasPieceScripts(this.configuredPieceRules) ? 7 : this.ruleScript ? 6 : hasPieceLibrary(this.configuredPieceRules) ? 5 : custom ? 4 : 3, initialPosition: this.initialPosition, passLimit: this.passLimit, ...(custom || this.ruleScript || this.initialPosition.settings ? { pieceRules: this.pieceRules } : {}), ...(this.ruleScript ? { ruleScript: this.ruleScript } : {}), moves: this.records.map(r => r.move), ...((reason === "resign" || reason === "agreement") ? { ending: reason } : {}) }; }
   static load(data: unknown): ShogiGame {
     if (!data || typeof data !== "object") throw new Error("将棋の保存データではありません");
     const d = data as SavedGame;
-    if (![1, 2, 3, 4, 5, 6, 7].includes(d.version) || !Array.isArray(d.moves) || d.moves.length > 1024 || (d.ending !== undefined && !["resign", "agreement"].includes(d.ending)) || (d.version < 6 && d.ruleScript !== undefined) || (d.version === 6 && !d.ruleScript)) throw new Error("対応していない保存データです");
+    if (![1, 2, 3, 4, 5, 6, 7, 8].includes(d.version) || !Array.isArray(d.moves) || d.moves.length > 1024 || (d.ending !== undefined && !["resign", "agreement"].includes(d.ending)) || (d.version < 6 && d.ruleScript !== undefined) || (d.version === 6 && !d.ruleScript)) throw new Error("対応していない保存データです");
     if ((d.version >= 4 && d.pieceRules === undefined) || (d.version < 4 && d.pieceRules !== undefined)) throw new Error("駒の動きの保存形式が壊れています");
     const pieceRules = loadPieceRules(d.pieceRules);
+    if (d.version < 8 && (d.initialPosition?.settings !== undefined || hasPieceProperties(pieceRules))) throw new Error("基本ルール・駒の属性の保存形式が壊れています");
     if (d.version < 7 && hasPieceScripts(pieceRules)) throw new Error("駒のルールコードの保存形式が壊れています");
     if (d.version < 5 && hasPieceLibrary(pieceRules)) throw new Error("追加駒・デザインの保存形式が壊れています");
     const passLimit = d.version === 1 ? 0 : d.passLimit;

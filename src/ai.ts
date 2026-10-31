@@ -1,17 +1,19 @@
-import { attacks, inCheck, legalActionIterator, isPassMove, positionAfterLegalMove, positionKey } from "./shogi";
+import { attacks, inCheck, legalActionIterator, isPassMove, positionAfterLegalMove, positionKey, royalResult } from "./shogi";
 import type { GameMove, PassAllowance, Piece, Position, Side } from "./shogi";
-import { pieceDefinition, handTypes, pieceState, loadPieceRules, hasRuleScripts } from "./pieces";
+import { pieceDefinition, handTypes, pieceState, loadPieceRules, hasRuleScripts, isRoyal } from "./pieces";
 import type { PieceRules } from "./pieces";
 import { loadRuleScript, validateRuleScript } from "./rulescript";
+import { boardSettings } from "./boardsettings";
 
 export interface AIOptions { maxDepth?: number; maxNodes?: number; maxTimeMs?: number; previousPositions?: string[]; passesRemaining?: PassAllowance; pieceRules?: PieceRules; ruleScript?: string }
 export interface AISearchResult { move: GameMove | null; depth: number; nodes: number; score: number }
 export interface AIRequest { id: number; position: Position; options: AIOptions }
 export type AIReply = { id: number; result: AISearchResult } | { id: number; error: string };
 const MATE = 1000000;
-const valueOf = (piece: Piece, rules?: PieceRules): number => pieceState(piece, rules).value;
+const valueOf = (piece: Piece, rules?: PieceRules): number => isRoyal(piece.type, rules) ? 20000 : pieceState(piece, rules).value;
 function evaluate(position: Position, rules: PieceRules, ruleScript = ""): number {
-  if (hasRuleScripts(ruleScript, rules) && position.ruleState?.result) return position.ruleState.result.winner === null ? 0 : position.ruleState.result.winner === position.turn ? MATE : -MATE;
+  const result = (hasRuleScripts(ruleScript, rules) ? position.ruleState?.result : null) ?? royalResult(position, rules);
+  if (result) return result.winner === null ? 0 : result.winner === position.turn ? MATE : -MATE;
   let score = 0;
   const defended: Record<Side, Map<number, number>> = { sente: new Map(), gote: new Map() };
   for (let i = 0; i < position.board.length; i++) {
@@ -22,15 +24,15 @@ function evaluate(position: Position, rules: PieceRules, ruleScript = ""): numbe
     const p = position.board[i]; if (!p) continue;
     const x = i % position.width, y = Math.floor(i / position.width), advance = p.side === "sente" ? position.height - 1 - y : y;
     const center = (position.width - 1) / 2;
-    let value = p.type === "K" ? (position.height - 1 - advance) * 4 : valueOf(p, rules) + advance * (p.type === "P" ? 8 : 3) + (center - Math.abs(center - x)) * 2;
+    let value = isRoyal(p.type, rules) ? (position.height - 1 - advance) * 4 : valueOf(p, rules) + advance * (p.type === "P" ? 8 : 3) + (center - Math.abs(center - x)) * 2;
     const enemy = defended[p.side === "sente" ? "gote" : "sente"].get(i);
-    if (enemy !== undefined && p.type !== "K") {
+    if (enemy !== undefined && !isRoyal(p.type, rules)) {
       value -= valueOf(p, rules) * (defended[p.side].has(i) ? .12 : .5);
       value -= Math.max(0, valueOf(p, rules) - enemy) * .25;
     }
     score += p.side === "sente" ? value : -value;
   }
-  for (const side of ["sente", "gote"] as Side[]) for (const type of handTypes(rules)) score += (side === "sente" ? 1 : -1) * (position.hands[side][type] ?? 0) * pieceDefinition(type, rules).value * 1.05;
+  if (boardSettings(position).useHands) for (const side of ["sente", "gote"] as Side[]) for (const type of handTypes(rules)) score += (side === "sente" ? 1 : -1) * (position.hands[side][type] ?? 0) * pieceDefinition(type, rules).value * 1.05;
   return Math.round(position.turn === "sente" ? score : -score);
 }
 function priority(position: Position, move: GameMove, rules: PieceRules): number {
@@ -56,7 +58,7 @@ export function chooseAIMove(position: Position, options: AIOptions = {}): AISea
   const checkBudget = () => { if (nodes >= maxNodes || performance.now() >= deadline) throw limit; };
   function search(current: Position, remaining: PassAllowance | undefined, depth: number, alpha: number, beta: number, ply: number): number {
     checkBudget(); nodes++;
-    if (hasRuleScripts(ruleScript, rules) && current.ruleState?.result) return evaluate(current, rules, ruleScript);
+    if ((hasRuleScripts(ruleScript, rules) && current.ruleState?.result) || royalResult(current, rules)) return evaluate(current, rules, ruleScript);
     if (depth === 0) {
       if (inCheck(current, current.turn, rules) && legalActionIterator(current, remaining, rules, ruleScript).next().done) return -MATE + ply;
       return evaluate(current, rules, ruleScript);

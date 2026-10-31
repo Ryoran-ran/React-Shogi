@@ -1,30 +1,19 @@
 import { evaluateRule } from "./scriptvm";
 import type { GameMove, Position, Side } from "./shogi";
-import { pieceTypes, canPromote } from "./pieces";
+import { pieceTypes, canPromote, royalTypes } from "./pieces";
+import { boardSettings } from "./boardsettings";
 import type { PieceRules } from "./pieces";
-import { loadRuleScript } from "./scriptconfig";
+import { loadRuleScript, validateScriptData } from "./scriptconfig";
+import type { ScriptData } from "./scriptconfig";
+export { validateScriptData } from "./scriptconfig";
+export type { ScriptData, ScriptValue } from "./scriptconfig";
 export { loadRuleScript, MAX_SCRIPT_LENGTH, SCRIPT_HOOKS, PIECE_SCRIPT_HOOKS } from "./scriptconfig";
 
-export type ScriptValue = null | boolean | number | string | ScriptValue[] | { [key: string]: ScriptValue };
-export type ScriptData = { [key: string]: ScriptValue };
 export interface RuleState { data: ScriptData; ply: number; seed: number; result?: { winner: Side | null; reason: "script" } }
 export interface RuleChoice { title: string; options: Array<{ value: string; label: string }>; index: number }
-export interface ScriptOutcome { position?: Position; effects?: string[]; choice?: RuleChoice; rejected?: string }
-export function validateScriptData(value: unknown): asserts value is ScriptData {
-  let count = 0;
-  const visit = (item: unknown, depth: number): void => {
-    if (++count > 4000 || depth > 12) throw new Error("ルールの独自データが大きすぎます");
-    if (item === null || typeof item === "boolean" || typeof item === "string") return;
-    if (typeof item === "number" && Number.isFinite(item)) return;
-    if (!item || typeof item !== "object") throw new Error("独自データにはJSONで保存できる値を使ってください");
-    for (const [key, child] of Object.entries(item)) {
-      if (["__proto__", "constructor", "prototype"].includes(key)) throw new Error("独自データに使用できない名前です");
-      visit(child, depth + 1);
-    }
-  };
-  if (!value || typeof value !== "object" || Array.isArray(value) || JSON.stringify(value).length > 20000) throw new Error("ルールの独自データが壊れています");
-  visit(value, 0);
-}
+export interface RuleTrace { event: string; scope: "board" | "piece"; pieceType?: string; square?: number; side?: Side; changes: string[]; error?: string }
+export interface ScriptOutcome { position?: Position; effects?: string[]; choice?: RuleChoice; rejected?: string; trace?: RuleTrace[]; error?: string }
+export class RuleScriptError extends Error { constructor(message: string, readonly trace: RuleTrace[]) { super(message); } }
 export function validateRuleState(value: unknown): asserts value is RuleState {
   const state = value as RuleState;
   if (!state || !Number.isSafeInteger(state.ply) || state.ply < 0 || !Number.isInteger(state.seed) || state.seed < 1 || state.seed > 0xffffffff || (state.result && (state.result.reason !== "script" || !["sente", "gote", null].includes(state.result.winner)))) throw new Error("ルールの状態が壊れています");
@@ -45,6 +34,8 @@ function scriptProgram(rules: Record<string, any>, input: string, pieceRules: Re
   if (payload.validate) return JSON.stringify({});
   p.ruleState ??= { data: {}, ply: 0, seed: 1 };
   const state = p.ruleState, effects: string[] = [], queue: any[] = [];
+  const trace: any[] = []; let traceSize = 0;
+  let failureContext = "";
   // Identities are private to this simulation; per-piece persisted state stays in piece.data.
   const identities = new WeakMap<object, number>(), discardedCaptures = new Set<number>();
   let nextIdentity = 1, captureSequence = 0;
@@ -96,6 +87,7 @@ function scriptProgram(rules: Record<string, any>, input: string, pieceRules: Re
     delete e._pieceId; delete e._capturedId; delete e._captureId;
     const ctx = {
       event: e, actor, self, side: self?.side ?? e.side ?? p.turn, turn: p.turn, ply: state.ply,
+      settings: copy(payload.settings), royalTypes: payload.royals.slice(),
       state: state.data,
       board: {
         width: p.width, height: p.height,
@@ -125,17 +117,18 @@ function scriptProgram(rules: Record<string, any>, input: string, pieceRules: Re
       spawn: (index: number, type: string, side: string, promoted = false) => {
         tick(); square(index); knownType(type, promoted);
         if (p.board[index] || !["sente", "gote"].includes(side)) fail("駒を生成できません");
-        p.board[index] = { type, side, promoted }; identity(p.board[index]); effects.push(`${type}を${index}に生成`);
+        const data = payload.defaults[type]; p.board[index] = { type, side, promoted, ...(data ? { data: copy(data) } : {}) }; identity(p.board[index]); effects.push(`${type}を${index}に生成`);
       },
       transform: (index: number, type: string, promoted = false) => {
         tick(); const target = piece(index); knownType(type, promoted);
-        p.board[index] = inherit(target, { ...target, type, promoted }); effects.push(`${index}の駒を${type}に変身`);
+        const data = payload.defaults[type]; p.board[index] = inherit(target, { ...target, type, promoted, ...(data ? { data: { ...copy(data), ...target.data } } : {}) }); effects.push(`${index}の駒を${type}に変身`);
       },
       move: (from: number, to: number, capture = false) => relocate(from, to, capture, true),
       capture: (from: number, to: number) => relocate(from, to, true, true),
       discardCapture: () => {
-        if (!e.captured || e.captured.type === "K") fail("捕獲された駒がありません");
+        if (!e.captured) fail("捕獲された駒がありません");
         if (type !== "afterCapture" && type !== "afterCaptured") fail("discardCapture は afterCapture / afterCaptured で使ってください");
+        if (!payload.settings.useHands || payload.royals.includes(e.captured.type)) return;
         if (discardedCaptures.has(event._captureId)) return;
         const hand = p.hands[e.side]; if (!(hand[e.captured.type] > 0)) fail("捕獲した持ち駒がありません");
         hand[e.captured.type]--; discardedCaptures.add(event._captureId); effects.push(`${e.captured.type}は持ち駒にならず消滅`);
@@ -159,9 +152,25 @@ function scriptProgram(rules: Record<string, any>, input: string, pieceRules: Re
       draw: () => { tick(); state.result = { reason: "script", winner: null }; },
       log: (message: unknown) => { tick(); effects.push(String(message).slice(0, 200)); },
     };
-    const result = handler(ctx);
-    if (result && typeof result.then === "function") fail("イベント関数は同期関数で記述してください");
-    if (type === "validateMove" && result === false) ctx.reject();
+    const before = payload.trace ? copy(p) : null, effectStart = effects.length;
+    let issue: any = null;
+    try {
+      const result = handler(ctx);
+      if (result && typeof result.then === "function") fail("イベント関数は同期関数で記述してください");
+      if (type === "validateMove" && result === false) ctx.reject();
+    } catch (error) { issue = error; if (error !== pending && error !== rejected) failureContext = `${self ? `駒 ${self.type}・マス${self.square}` : "盤面"} / ${type}`; throw error; }
+    finally {
+      if (before && traceSize < 150000) {
+        const changes = effects.slice(effectStart), describe = (value: any) => JSON.stringify(value)?.slice(0, 240) ?? "未設定";
+        for (let index = 0; index < p.board.length; index++) if (JSON.stringify(before.board[index]) !== JSON.stringify(p.board[index])) changes.push(`マス${index}: ${describe(before.board[index])} → ${describe(p.board[index])}`);
+        if (JSON.stringify(before.hands) !== JSON.stringify(p.hands)) changes.push(`持ち駒: ${describe(before.hands)} → ${describe(p.hands)}`);
+        for (const key of new Set([...Object.keys(before.ruleState.data), ...Object.keys(state.data)])) if (JSON.stringify(before.ruleState.data[key]) !== JSON.stringify(state.data[key])) changes.push(`共有データ ${key}: ${describe(before.ruleState.data[key])} → ${describe(state.data[key])}`);
+        if (before.ruleState.seed !== state.seed) changes.push(`乱数状態: ${before.ruleState.seed} → ${state.seed}`);
+        if (JSON.stringify(before.ruleState.result) !== JSON.stringify(state.result)) changes.push(`勝敗: ${describe(before.ruleState.result)} → ${describe(state.result)}`);
+        const row = { event: type, scope: self ? "piece" : "board", ...(self ? { pieceType: self.type, square: self.square } : {}), side: ctx.side, changes: changes.slice(0, 30), ...(issue ? { error: issue === pending ? "選択待ち" : issue === rejected ? rejection : String(issue.message ?? issue) } : {}) };
+        traceSize += JSON.stringify(row).length; trace.push(row);
+      }
+    }
   }
   function relocate(from: number, to: number, capture: boolean, automatic: boolean, promote = false): void {
     tick(); square(from); square(to); if (from === to) fail("同じマスには移動できません");
@@ -171,7 +180,7 @@ function scriptProgram(rules: Record<string, any>, input: string, pieceRules: Re
     if (target) dispatch("beforeCapture", event);
     if (!p.board[from] || identities.get(p.board[from]) !== event._pieceId || JSON.stringify(p.board[to]) !== JSON.stringify(target)) fail("捕獲前の効果で対象が変更されました");
     moving = copy(p.board[from]);
-    if (target && target.type !== "K") p.hands[moving.side][target.type] = (p.hands[moving.side][target.type] ?? 0) + 1;
+    if (target && !payload.royals.includes(target.type) && payload.settings.useHands) p.hands[moving.side][target.type] = (p.hands[moving.side][target.type] ?? 0) + 1;
     p.board[to] = inherit(p.board[from], { ...moving, promoted: moving.promoted || promote }); p.board[from] = null;
     if (automatic) effects.push(`${moving.type}が${from}から${to}へ自動移動`);
     if (target) { enqueue("afterCapture", event); enqueue("afterCaptured", event); }
@@ -188,7 +197,7 @@ function scriptProgram(rules: Record<string, any>, input: string, pieceRules: Re
       if (!passing) {
         if (move.drop) {
           tick(); square(move.to); if (p.board[move.to] || !(p.hands[side][move.drop] > 0)) fail("駒を打てません");
-          p.hands[side][move.drop]--; p.board[move.to] = { type: move.drop, side, promoted: false }; enqueue("afterMove", { ...event, _pieceId: identity(p.board[move.to]) });
+          const data = payload.defaults[move.drop]; p.hands[side][move.drop]--; p.board[move.to] = { type: move.drop, side, promoted: false, ...(data ? { data: copy(data) } : {}) }; enqueue("afterMove", { ...event, _pieceId: identity(p.board[move.to]) });
         } else relocate(move.from, move.to, true, false, move.promote);
       }
       drain(); dispatch("turnEnd", { side }); drain();
@@ -199,13 +208,15 @@ function scriptProgram(rules: Record<string, any>, input: string, pieceRules: Re
     if (selections.length !== choiceIndex) fail("選択の記録が一致しません");
     validateData(state.data);
     for (const item of p.board) if (item?.data !== undefined) validateData(item.data);
-    const output = JSON.stringify({ position: p, effects });
-    if (output.length > 80000) fail("ルールの出力が大きすぎます");
+    const output = JSON.stringify({ position: p, effects, ...(payload.trace ? { trace } : {}) });
+    if (output.length > (payload.trace ? 300000 : 80000)) fail("ルールの出力が大きすぎます");
     return output;
   } catch (error) {
     if (error === pending) return JSON.stringify({ choice: requested });
     if (error === rejected) return JSON.stringify({ rejected: rejection });
-    throw error;
+    const message = `${failureContext ? failureContext + "：" : ""}${String((error as any)?.message ?? error)}`;
+    if (payload.trace) return JSON.stringify({ error: message, trace });
+    throw new Error(message);
   }
 }
 
@@ -219,15 +230,17 @@ export function validateRuleScript(source: string, rules: PieceRules = {}): void
   if (validationCache.size >= 32) validationCache.clear(); validationCache.add(key);
 }
 const transitionCache = new Map<string, ScriptOutcome>();
-export function runRuleScript(source: string, position: Position, rules: PieceRules, move?: GameMove): ScriptOutcome {
-  const key = JSON.stringify([source, position, rules, move]);
+export function runRuleScript(source: string, position: Position, rules: PieceRules, move?: GameMove, trace = false): ScriptOutcome {
+  const key = JSON.stringify([source, position, rules, move, trace]);
   const cached = transitionCache.get(key); if (cached) return structuredClone(cached);
-  const result: ScriptOutcome = JSON.parse(evaluateRule(source, program, JSON.stringify({ position, move, start: !move, types: pieceTypes(rules), promotable: pieceTypes(rules).filter(type => canPromote(type, rules)) }), pieceSources(rules)));
+  const result: ScriptOutcome = JSON.parse(evaluateRule(source, program, JSON.stringify({ position, move, start: !move, trace, settings: boardSettings(position), royals: royalTypes(rules), defaults: Object.fromEntries(Object.entries(rules).filter(([, entry]) => entry?.initialData).map(([type, entry]) => [type, entry!.initialData])), types: pieceTypes(rules), promotable: pieceTypes(rules).filter(type => canPromote(type, rules)) }), pieceSources(rules)));
+  if (result.error) throw new RuleScriptError(`ルールスクリプト：${result.error}`, result.trace ?? []);
   if (result.position) {
     if (result.position.width !== position.width || result.position.height !== position.height || result.position.turn !== (move ? position.turn === "sente" ? "gote" : "sente" : position.turn)) throw new Error("ルールが盤面サイズ・手番を不正に変更しました");
     validateRuleState(result.position.ruleState);
-    const kings = ["sente", "gote"].map(side => result.position!.board.some(piece => piece?.type === "K" && piece.side === side));
-    if (!result.position.ruleState!.result && kings.some(present => !present)) result.position.ruleState!.result = { reason: "script", winner: kings[0] ? "sente" : kings[1] ? "gote" : null };
+    if (JSON.stringify(result.position.settings) !== JSON.stringify(position.settings)) throw new Error("ルールから基本設定は変更できません");
+    const royals = royalTypes(rules), kings = ["sente", "gote"].map(side => result.position!.board.some(piece => piece && royals.includes(piece.type) && piece.side === side));
+    if (royals.length && !result.position.ruleState!.result && kings.some(present => !present)) result.position.ruleState!.result = { reason: "script", winner: kings[0] ? "sente" : kings[1] ? "gote" : null };
   }
   if (transitionCache.size >= 512) transitionCache.delete(transitionCache.keys().next().value!);
   transitionCache.set(key, structuredClone(result)); return result;

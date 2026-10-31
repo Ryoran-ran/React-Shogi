@@ -1,7 +1,7 @@
 import { canPromote, pieceState, movementOffsetLabel, MAX_PIECE_OFFSET, PIECE_TYPES, loadPieceRules, updatePieceMovements, updateSharedPieceMovements, pieceActionsSeparate, setPieceActionsSeparate, resetPieceMovements, pieceTypes, pieceTypeLabel, pieceDefinition, isBuiltinPiece, addCustomPiece, updateCustomPiece, pieceDesign, updatePieceDesign, resetPieceDesign, MAX_CUSTOM_PIECES, MAX_PIECE_NAME_LENGTH } from "./pieces";
 import type { PieceType, PieceRules, PieceAction, PieceMovement } from "./pieces";
 import { renderPiece } from "./pieceview";
-import { updatePieceScript } from "./pieces";
+import { updatePieceScript, updatePieceProperties, isRoyal } from "./pieces";
 
 const esc = (value: unknown) => String(value).replace(/[&<>"']/g, character => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[character]!));
 interface PieceEditorControl { id: string; dataset?: Record<string, string | undefined>; value?: string; checked?: boolean }
@@ -12,13 +12,18 @@ export interface PieceEditorView {
   displayRadius: number;
   section: "movement" | "design";
   separateCapture: boolean;
+  canRedo: boolean;
+  initialDataText: string;
 }
+export interface PieceEditorDraft { rules: PieceRules; baseRules: PieceRules; piece: PieceType; promoted: boolean; action: PieceAction; section: "movement" | "design"; displayRadius: number; dataDrafts: Record<string, string> }
 
 /** A settings draft independent of the board, with its own selection and undo history. */
 export class PieceEditor {
   private rules: PieceRules;
   private initialRules: string;
   private history: PieceRules[] = [];
+  private future: Array<{ rules: PieceRules; piece: PieceType; promoted: boolean }> = [];
+  private dataDrafts: Record<string, string> = {};
   private piece: PieceType;
   private promoted: boolean;
   private action: PieceAction = "moves";
@@ -33,12 +38,22 @@ export class PieceEditor {
   }
   get pieceRules(): PieceRules { return structuredClone(this.rules); }
   setPieceScript(source: string): void { this.commit(updatePieceScript(this.rules, this.piece, source)); }
+  get draft(): PieceEditorDraft { return { rules: this.pieceRules, baseRules: JSON.parse(this.initialRules), piece: this.piece, promoted: this.promoted, action: this.action, section: this.section, displayRadius: this.displayRadius, dataDrafts: { ...this.dataDrafts } }; }
+  static restore(data: PieceEditorDraft): PieceEditor {
+    const rules = loadPieceRules(data.rules);
+    if (!pieceTypes(rules).includes(data.piece) || !["moves","captures"].includes(data.action) || !["movement","design"].includes(data.section) || !Number.isInteger(data.displayRadius) || data.displayRadius < 1 || data.displayRadius > MAX_PIECE_OFFSET) throw new Error("駒設定の下書きが壊れています");
+    const editor = new PieceEditor(rules, data.piece, data.promoted);
+    editor.initialRules = JSON.stringify(loadPieceRules(data.baseRules)); editor.action = data.action; editor.section = data.section; editor.displayRadius = data.displayRadius;
+    if (data.dataDrafts && Object.entries(data.dataDrafts).every(([type,text]) => pieceTypes(rules).includes(type as PieceType) && typeof text === "string" && text.length <= 30000)) editor.dataDrafts = { ...data.dataDrafts };
+    return editor;
+  }
   private get separateCapture(): boolean { return pieceActionsSeparate(this.piece, this.promoted, this.rules); }
   private get currentAction(): PieceAction { return this.separateCapture ? this.action : "moves"; }
-  get view(): PieceEditorView { return { piece: this.piece, promoted: this.promoted, action: this.currentAction, separateCapture: this.separateCapture, rules: this.pieceRules, dx: this.dx, dy: this.dy, range: this.range, displayRadius: this.displayRadius, section: this.section, canUndo: this.history.length > 0, changed: JSON.stringify(this.rules) !== this.initialRules }; }
+  get view(): PieceEditorView { return { piece: this.piece, promoted: this.promoted, action: this.currentAction, separateCapture: this.separateCapture, rules: this.pieceRules, dx: this.dx, dy: this.dy, range: this.range, displayRadius: this.displayRadius, section: this.section, canUndo: this.history.length > 0, canRedo: this.future.length > 0, initialDataText: this.dataDrafts[this.piece] ?? JSON.stringify(this.rules[this.piece]?.initialData ?? {}, null, 2), changed: JSON.stringify(this.rules) !== this.initialRules }; }
   private commit(rules: PieceRules): void {
     if (JSON.stringify(rules) === JSON.stringify(this.rules)) return;
     this.history.push(this.rules); if (this.history.length > 100) this.history.shift();
+    this.future = [];
     this.rules = rules;
   }
   private setMovements(action: PieceAction, movements: readonly PieceMovement[]): void {
@@ -96,8 +111,12 @@ export class PieceEditor {
       this.setMovements(action === "moves" ? "captures" : "moves", movements); focus = "#piece-rule-copy";
     } else if (control.id === "piece-rule-reset") {
       this.commit(resetPieceMovements(this.rules, this.piece, this.promoted)); focus = "#piece-rule-reset";
+    } else if (control.id === "piece-initial-data-apply") {
+      this.commit(updatePieceProperties(this.rules, this.piece, { initialData: JSON.parse(this.view.initialDataText) })); delete this.dataDrafts[this.piece];
+    } else if (control.id === "piece-editor-redo") {
+      const next = this.future.pop(); if (next) { this.history.push(this.rules); this.rules = next.rules; this.piece = next.piece; this.promoted = next.promoted; delete this.dataDrafts[this.piece]; }
     } else if (control.id === "piece-editor-undo") {
-      const previous = this.history.pop(); if (previous) this.rules = previous;
+      const previous = this.history.pop(); if (previous) { this.future.push({ rules: this.rules, piece: this.piece, promoted: this.promoted }); this.rules = previous; delete this.dataDrafts[this.piece]; }
       if (!pieceTypes(this.rules).includes(this.piece)) this.piece = "P";
       this.promoted = this.promoted && canPromote(this.piece, this.rules);
     } else return null;
@@ -105,6 +124,8 @@ export class PieceEditor {
   }
   handleChange(control: PieceEditorControl): PieceEditorUpdate | null {
     const data = control.dataset ?? {};
+    if (control.id === "piece-royal") { this.commit(updatePieceProperties(this.rules, this.piece, { royal: control.checked === true })); return { render: true, focus: "#piece-royal" }; }
+    if (control.id === "piece-initial-data") { this.dataDrafts[this.piece] = control.value ?? ""; return { render: false }; }
     if (control.id === "piece-rule-separate") {
       this.commit(setPieceActionsSeparate(this.rules, this.piece, this.promoted, control.checked === true));
       if (!this.separateCapture) this.action = "moves";
@@ -172,11 +193,11 @@ function renderDesignSettings(view: PieceEditorView): string {
 export function renderPieceEditor(view: PieceEditorView): string {
   const state = pieceState({ type: view.piece, promoted: view.promoted }, view.rules);
   return `<header class="site-header piece-editor-header"><div class="brand"><span class="brand-icon">駒</span><span>駒の設定<small>PIECE EDITOR</small></span></div><div class="header-tools"><button id="piece-editor-cancel" class="text-button">変更せず戻る</button><button id="piece-editor-back" class="editor-primary">設定を反映して戻る</button></div></header>
-    <main class="piece-editor-main" aria-labelledby="piece-editor-title"><div class="piece-editor-intro"><span>盤面編集 / 駒の設定</span><p>設定を反映して盤面編集へ戻り、配置と一緒に保存できます。</p></div><div class="piece-editor-layout">
+    <main class="piece-editor-main" aria-labelledby="piece-editor-title"><div class="piece-editor-intro"><span>盤面編集 / 駒の設定</span><p>設定を反映して盤面編集へ戻り、配置と一緒に保存できます。</p><button id="editor-test-start">この下書きをテスト</button><span id="editor-draft-status" class="draft-status"></span></div><div class="piece-editor-layout">
     <aside class="piece-editor-library" aria-label="編集する駒"><h2>駒一覧</h2><div class="piece-library-tools"><button id="piece-editor-add" ${pieceTypes(view.rules).length - PIECE_TYPES.length >= MAX_CUSTOM_PIECES ? "disabled" : ""}>＋ 駒を追加</button><button id="piece-editor-copy" ${pieceTypes(view.rules).length - PIECE_TYPES.length >= MAX_CUSTOM_PIECES ? "disabled" : ""}>選択中の駒をコピー</button></div><div class="piece-editor-piece-list">${pieceTypes(view.rules).map(type => `<button data-rule-piece="${type}" aria-pressed="${view.piece === type}"><strong>${esc(pieceTypeLabel(type, view.rules))}</strong><small>${view.rules[type] ? "設定あり" : "標準"}</small></button>`).join("")}</div></aside>
-    <div class="piece-editor-workspace"><section class="piece-editor-card piece-editor-selection"><div class="piece-editor-title-row"><div><span class="menu-eyebrow">MOVEMENT</span><h1 id="piece-editor-title" tabindex="-1">${esc(pieceTypeLabel(view.piece, view.rules))}${view.promoted ? "（成り後）" : ""}の設定</h1></div><button id="piece-editor-undo" ${view.canUndo ? "" : "disabled"}>↶ 一つ戻す</button></div><p>同じ種類の駒すべてに適用します。通常と成り後は別々に設定できます。<span class="piece-editor-draft-status" role="status">${view.changed ? "反映前の変更があります" : "変更はありません"}</span></p>
+    <div class="piece-editor-workspace"><section class="piece-editor-card piece-editor-selection"><div class="piece-editor-title-row"><div><span class="menu-eyebrow">MOVEMENT</span><h1 id="piece-editor-title" tabindex="-1">${esc(pieceTypeLabel(view.piece, view.rules))}${view.promoted ? "（成り後）" : ""}の設定</h1></div><button id="piece-editor-undo" ${view.canUndo ? "" : "disabled"}>↶ 一つ戻す</button><button id="piece-editor-redo" ${view.canRedo ? "" : "disabled"}>↷ やり直す</button></div><p>同じ種類の駒すべてに適用します。通常と成り後は別々に設定できます。<span class="piece-editor-draft-status" role="status">${view.changed ? "反映前の変更があります" : "変更はありません"}</span></p>
     ${!isBuiltinPiece(view.piece) ? `<div class="piece-basic-fields"><label>駒の名前<input id="piece-name" maxlength="${MAX_PIECE_NAME_LENGTH}" value="${esc(pieceDefinition(view.piece, view.rules).name)}"></label><label class="piece-promotion-option"><input id="piece-promotion" type="checkbox" ${canPromote(view.piece, view.rules) ? "checked" : ""}>成り後を設定する</label></div>` : ""}<div class="piece-editor-categories"><button data-piece-section="movement" aria-pressed="${view.section === "movement"}">動き</button><button data-piece-section="design" aria-pressed="${view.section === "design"}">デザイン</button><button id="piece-editor-open-script">この駒のルールコード${view.rules[view.piece]?.script ? " ●" : ""}</button></div>
-    <div class="piece-editor-switches"><div class="piece-rule-tabs" aria-label="編集する駒の状態"><button data-rule-promoted="false" aria-pressed="${!view.promoted}">通常</button><button data-rule-promoted="true" aria-pressed="${view.promoted}" ${canPromote(view.piece, view.rules) ? "" : "disabled"}>成り後</button></div>
+    <section class="piece-initial-properties"><label><input id="piece-royal" type="checkbox" ${isRoyal(view.piece,view.rules) ? "checked" : ""}>王として扱う（各側1枚）</label><details><summary>種類ごとの初期データ（HP・使用回数など）</summary><textarea id="piece-initial-data" maxlength="30000" spellcheck="false" aria-label="駒の種類の初期データ">${esc(view.initialDataText)}</textarea><button id="piece-initial-data-apply">初期データを反映</button><p>JSONオブジェクトで設定します。盤面上の個別データで上書きでき、駒打ちでは初期値に戻ります。</p></details></section><div class="piece-editor-switches"><div class="piece-rule-tabs" aria-label="編集する駒の状態"><button data-rule-promoted="false" aria-pressed="${!view.promoted}">通常</button><button data-rule-promoted="true" aria-pressed="${view.promoted}" ${canPromote(view.piece, view.rules) ? "" : "disabled"}>成り後</button></div>
     ${view.section === "movement" ? `<div class="piece-actions-mode"><label><input id="piece-rule-separate" type="checkbox" ${view.separateCapture ? "checked" : ""} aria-describedby="piece-actions-hint">移動と駒取りを別々に設定する</label><p id="piece-actions-hint">${view.separateCapture ? "共通に戻すと「移動」の設定を駒取りにも適用します。取り消しで元に戻せます。" : "方向・間隔・回数の変更を、移動と駒取りの両方に反映します。"}</p>${view.separateCapture ? `<div class="piece-rule-tabs" aria-label="編集する動作"><button data-rule-action="moves" aria-pressed="${view.action === "moves"}">移動</button><button data-rule-action="captures" aria-pressed="${view.action === "captures"}">駒取り</button></div>` : ""}</div>` : ""}</div></section>
     ${view.section === "design" ? renderDesignSettings(view) : renderMovementGrid(view) + renderMovementSettings(view)}</div></div></main>`;
 }
