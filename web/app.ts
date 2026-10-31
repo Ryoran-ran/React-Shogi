@@ -1,5 +1,5 @@
-import { ShogiGame, HAND_TYPES, PIECE_NAMES, PIECE_LABELS, SIDE_NAMES, pieceName, pieceLabel, legalMoves, inCheck, positionKey } from "../src/shogi";
-import type { Move, HandType, Side, Piece } from "../src/shogi";
+import { ShogiGame, HAND_TYPES, PIECE_NAMES, PIECE_LABELS, SIDE_NAMES, pieceName, pieceLabel, legalMoves, inCheck, positionKey, isPassMove } from "../src/shogi";
+import type { GameMove, Move, HandType, Side, Piece } from "../src/shogi";
 import type { AIReply, AIRequest } from "../src/ai";
 
 const $ = (s: string) => document.querySelector(s) as HTMLElement;
@@ -18,14 +18,14 @@ resultOpen = game.result !== null;
 const guides = { K: "縦・横・斜めに1マス進めます。", R: "縦・横に、駒にぶつかるまで進めます。", B: "斜めに、駒にぶつかるまで進めます。", G: "前と斜め前、横、真後ろに1マス進めます。", S: "前と斜め前、斜め後ろに1マス進めます。", N: "前に2マス、横に1マス跳びます。", L: "前に、駒にぶつかるまで進めます。", P: "前に1マス進めます。" };
 function notify(message: string) { const t = $("#toast"); t.textContent = message; t.classList.add("show"); clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove("show"), 3500); }
 function persist() { try { localStorage.setItem(storageKey, JSON.stringify({ game: game.save(), flipped, aiMode, aiStrength })); saved = true; } catch { saved = false; notify("自動保存できません。棋譜を保存してください。"); } }
-function execute(move: Move) { game.play(move); selected = null; selectedHandIndex = -1; pending = []; if (game.result) presentResult(); persist(); render(); scheduleAI(); }
+function execute(move: GameMove) { game.play(move); selected = null; selectedHandIndex = -1; pending = []; if (game.result) presentResult(); persist(); render(); scheduleAI(); }
 function presentResult(animate = true): void {
   if (!game.result) return;
   stopAI(); selected = null; pending = []; historyOpen = false; resultOpen = true; resultAnimate = animate;
 }
 function dismissResult(): void { resultOpen = false; resultAnimate = false; render(); $("#show-result").focus(); }
 function restartGame(): void {
-  stopAI(); game = new ShogiGame(); selected = null; selectedHandIndex = -1; pending = []; historyOpen = false; resultOpen = false; resultAnimate = false;
+  stopAI(); game = new ShogiGame(undefined, { passLimit: game.passLimit }); selected = null; selectedHandIndex = -1; pending = []; historyOpen = false; resultOpen = false; resultAnimate = false;
   aiRunning = aiMode === "sente" || aiMode === "gote"; aiStartPly = 0; persist(); render(); scheduleAI();
 }
 function isAITurn(): boolean { const turn = game.position.turn; return aiMode === "both" || (aiMode === "sente" && turn === "gote") || (aiMode === "gote" && turn === "sente"); }
@@ -63,14 +63,19 @@ function requestAIMove(): void {
       try { execute(move); } catch (error) { stopAI(); render(); notify(`AI の手を適用できません：${(error as Error).message}`); }
     };
     worker.onerror = () => { if (aiWorker !== worker || aiRequestId !== id) return; stopAI(); render(); notify("AI を起動できませんでした。ページを再読み込みしてください。"); };
-    const request: AIRequest = { id, position, options: { maxDepth: aiStrength === "fast" ? 2 : 3, maxNodes: aiStrength === "fast" ? 1600 : 8000, maxTimeMs: aiStrength === "fast" ? 180 : 700, previousPositions: game.positionHistory } };
+    const request: AIRequest = { id, position, options: { maxDepth: aiStrength === "fast" ? 2 : 3, maxNodes: aiStrength === "fast" ? 1600 : 8000, maxTimeMs: aiStrength === "fast" ? 180 : 700, previousPositions: game.positionHistory, passesRemaining: game.passesRemaining } };
     worker.postMessage(request);
   } catch (error) { stopAI(); render(); notify(`AI を起動できません：${(error as Error).message}`); }
+}
+function passControls(): string {
+  const remaining = game.passesRemaining, blocked = aiBusy || (aiRunning && isAITurn());
+  const reason = game.result ? "対局は終了しています" : blocked ? "AI の手番です" : inCheck(game.position) ? "王手中はパスできません" : !game.canPass ? "パスの残り回数がありません" : "盤面を変えずに手番を相手に渡します";
+  return `<div class="pass-controls" role="group" aria-label="パスの追加ルール"><button id="pass" ${blocked || pending.length || !game.canPass ? "disabled" : ""} title="${reason}">パスする</button><span class="pass-remaining" role="status">${(["sente", "gote"] as Side[]).map(side => `${SIDE_NAMES[side]}：${remaining[side] === null ? "無制限" : `残り${remaining[side]}回`}`).join(" / ")}</span><label class="pass-limit-label">パス上限（各自）<input id="pass-limit" type="number" min="0" step="1" value="${game.passLimit ?? ""}" placeholder="無制限" aria-label="各プレイヤーのパス上限" aria-describedby="pass-limit-hint" ${game.moveCount || game.result || aiBusy ? "disabled" : ""}></label><small id="pass-limit-hint">空欄＝無制限・0＝不可（開始前のみ変更）</small></div>`;
 }
 function aiControls(): string {
   const modes: Array<[AIMode, string]> = [["human", "2人で指す"], ["sente", "自分：先手 / AI：後手"], ["gote", "自分：後手 / AI：先手"], ["both", "AI同士（動作確認）"]];
   const status = aiStopRequested ? "この1手の後に停止します" : aiBusy ? "AI 思考中…" : aiRunning ? isAITurn() ? "自動実行中" : "自分の手番" : aiMode === "human" ? "" : "停止中";
-  return `<div class="ai-controls"><select id="ai-mode" aria-label="対局モード">${modes.map(([value, label]) => `<option value="${value}" ${aiMode === value ? "selected" : ""}>${label}</option>`).join("")}</select><select id="ai-strength" aria-label="AIの読み"><option value="fast" ${aiStrength === "fast" ? "selected" : ""}>速い</option><option value="standard" ${aiStrength === "standard" ? "selected" : ""}>じっくり</option></select><button id="ai-step" ${aiBusy || pending.length || game.result ? "disabled" : ""}>AIで1手</button><button id="ai-toggle" data-ai-action="${aiRunning || aiBusy ? "stop" : "start"}" ${aiStopRequested || (aiMode === "human" && !aiBusy) || pending.length || game.result ? "disabled" : ""}>${aiStopRequested ? "停止予約済み" : aiRunning || aiBusy ? "■ 停止" : "▶ 自動開始"}</button><span class="ai-status ${aiBusy ? "thinking" : ""}" role="status">${status}</span></div>`;
+  return `<div class="ai-controls"><select id="ai-mode" aria-label="対局モード">${modes.map(([value, label]) => `<option value="${value}" ${aiMode === value ? "selected" : ""}>${label}</option>`).join("")}</select><select id="ai-strength" aria-label="AIの読み"><option value="fast" ${aiStrength === "fast" ? "selected" : ""}>速い</option><option value="standard" ${aiStrength === "standard" ? "selected" : ""}>じっくり</option></select><button id="ai-step" ${aiBusy || pending.length || game.result ? "disabled" : ""}>AIで1手</button><button id="ai-toggle" data-ai-action="${aiRunning || aiBusy ? "stop" : "start"}" ${aiStopRequested || (aiMode === "human" && !aiBusy) || pending.length || game.result ? "disabled" : ""}>${aiStopRequested ? "停止予約済み" : aiRunning || aiBusy ? "■ 停止" : "▶ 自動開始"}</button><span class="ai-status ${aiBusy ? "thinking" : ""}" role="status">${status}</span>${passControls()}</div>`;
 }
 function resultText(): string {
   const r = game.result; if (!r) return "";
@@ -106,7 +111,8 @@ function render() {
   const position = game.position, records = game.records, result = game.result, check = !result && inCheck(position);
   const targets = selected === null || result ? [] : legalMoves(position).filter(m => typeof selected === "number" ? m.from === selected : m.drop === selected);
   const destinations = new Set(targets.map(m => m.to));
-  const indices = Array.from({ length: 81 }, (_, i) => flipped ? 80 - i : i), lastMove = records.at(-1)?.move;
+  const indices = Array.from({ length: 81 }, (_, i) => flipped ? 80 - i : i), lastAction = records.at(-1)?.move;
+  const lastMove = lastAction && !isPassMove(lastAction) ? lastAction : undefined;
   const selectedPiece = typeof selected === "number" ? position.board[selected] : null;
   const selectionName = selectedPiece ? pieceName(selectedPiece) : typeof selected === "string" ? PIECE_NAMES[selected] : "";
   const files = flipped ? "１２３４５６７８９" : "９８７６５４３２１", ranks = flipped ? "九八七六五四三二一" : "一二三四五六七八九";
@@ -157,6 +163,9 @@ document.addEventListener("click", e => {
       case "result-close": case "result-view-board": dismissResult(); break;
       case "show-result": presentResult(false); render(); break;
       case "result-restart": restartGame(); break;
+      case "pass":
+        if (aiBusy || (aiRunning && isAITurn())) { notify("AI の手番です。操作する場合は停止を押してください。"); break; }
+        execute({ pass: true }); break;
       case "ai-step": stopAI(); requestAIMove(); break;
       case "ai-toggle":
         // The original stop button may receive its click after the AI has stopped.
@@ -195,6 +204,14 @@ document.addEventListener("keydown", e => {
 });
 document.addEventListener("change", async e => {
   const input = e.target as HTMLInputElement;
+  if (input.id === "pass-limit") {
+    try {
+      if (aiBusy) throw new Error("パス上限は対局開始前に設定してください");
+      if (input.validity?.badInput) throw new Error("パス上限は0以上の整数、または無制限にしてください");
+      game.setPassLimit(input.value.trim() === "" ? null : Number(input.value)); persist(); render();
+    } catch (error) { render(); notify((error as Error).message); }
+    return;
+  }
   if (input.id === "ai-mode" && ["human", "sente", "gote", "both"].includes(input.value)) {
     stopAI(); aiMode = input.value as AIMode; selected = null; selectedHandIndex = -1; aiRunning = !game.result && (aiMode === "sente" || aiMode === "gote"); aiStartPly = game.moveCount; persist(); render(); scheduleAI(); return;
   }

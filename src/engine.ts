@@ -155,7 +155,7 @@ export class GameRuleEngine implements RuleEngine {
         const ctx: EvalContext = { definition: this.definition, state: draft, event: current, locals: {}, nodes };
         for (const rule of rules) {
           if (rule.when) { const condition = evaluate(rule.when, ctx); if (typeof condition !== "boolean") fail("EXPRESSION_TYPE"); if (!condition) continue; }
-          log.rules.push(rule.id); execute(rule.actions, ctx); if (draft.status === "finished") break;
+          log.rules.push(rule.id); execute(rule.actions, ctx); if (ctx.state.status === "finished") break;
         }
       }
       draft.revision++; draft.pending.sort(order); this.state = draft;

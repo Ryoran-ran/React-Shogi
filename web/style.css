@@ -257,6 +257,13 @@ main { grid-template-rows: auto minmax(0, 1fr); }
 .ai-controls select:focus-visible { outline: 2px solid #8da88c; outline-offset: 2px; }
 .ai-status { font-size: 10px; color: #8a927d; white-space: nowrap; padding: 0 4px; }
 .ai-status.thinking { color: #405b45; font-weight: 700; }
+.pass-controls { flex: 0 0 100%; display: flex; align-items: center; flex-wrap: wrap; gap: 6px 10px; padding-top: 6px; border-top: 1px solid var(--line); }
+.pass-remaining { font-size: 10px; color: #405b45; }
+.pass-limit-label { display: flex; align-items: center; gap: 5px; font-size: 10px; white-space: nowrap; }
+.pass-limit-label input { width: 76px; height: 27px; padding: 3px 6px; border: 1px solid var(--line); border-radius: 5px; color: #405b45; background: #fffefa; font: inherit; font-size: 11px; }
+.pass-limit-label input:disabled { opacity: .6; }
+.pass-limit-label input:focus-visible { outline: 2px solid #8da88c; outline-offset: 2px; }
+#pass-limit-hint { font-size: 9px; color: #858c79; }
 .result-reopen { margin-left: 8px; font-size: 10px; white-space: nowrap; }
 .result-backdrop {
   position: fixed; inset: 0; z-index: 40;

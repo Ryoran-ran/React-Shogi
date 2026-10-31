@@ -4,10 +4,15 @@ export type HandType = Exclude<PieceType, "K">;
 export interface Piece { type: PieceType; side: Side; promoted: boolean }
 export interface Position { board: Array<Piece | null>; hands: Record<Side, Record<HandType, number>>; turn: Side }
 export interface Move { from?: number; drop?: HandType; to: number; promote: boolean }
+export interface PassMove { pass: true }
+export type GameMove = Move | PassMove;
+export type PassAllowance = Record<Side, number | null>;
+export interface GameOptions { passLimit?: number | null }
 export interface Result { reason: "mate" | "noMoves" | "repetition" | "perpetualCheck" | "resign" | "agreement"; winner: Side | null }
-export interface MoveRecord { move: Move; side: Side; notation: string; check: boolean }
-interface Frame { position: Position; record: MoveRecord | null; result: Result | null }
-export interface SavedGame { version: 1; moves: Move[]; ending?: "resign" | "agreement" }
+export interface MoveRecord { move: GameMove; side: Side; notation: string; check: boolean }
+interface Frame { position: Position; record: MoveRecord | null; result: Result | null; passesUsed: Record<Side, number> }
+export interface SavedGame { version: 1 | 2; moves: GameMove[]; passLimit?: number | null; ending?: "resign" | "agreement" }
+export const isPassMove = (move: GameMove): move is PassMove => "pass" in move && move.pass === true;
 export const HAND_TYPES: HandType[] = ["R", "B", "G", "S", "N", "L", "P"];
 export const SIDE_NAMES = { sente: "先手", gote: "後手" };
 export const PIECE_NAMES: Record<PieceType, string> = { K: "王", R: "飛", B: "角", G: "金", S: "銀", N: "桂", L: "香", P: "歩" };
@@ -64,8 +69,9 @@ export function inCheck(position: Position, side = position.turn): boolean {
   if (king < 0) return true;
   return position.board.some((p, index) => p?.side === opposite(side) && attacks(position, index).includes(king));
 }
-function applyUnchecked(position: Position, move: Move): Position {
+function applyUnchecked(position: Position, move: GameMove): Position {
   const next = clone(position), side = position.turn;
+  if (isPassMove(move)) { next.turn = opposite(side); return next; }
   if (move.drop) { next.hands[side][move.drop]--; next.board[move.to] = { type: move.drop, side, promoted: false }; }
   else {
     const p = next.board[move.from!]!, captured = next.board[move.to];
@@ -74,8 +80,8 @@ function applyUnchecked(position: Position, move: Move): Position {
   }
   next.turn = opposite(side); return next;
 }
-/** Search helper: the caller must obtain the move from legalMoveIterator. */
-export function positionAfterLegalMove(position: Position, move: Move): Position { return applyUnchecked(position, move); }
+/** Search helper: the caller must obtain the move from a legal move/action iterator. */
+export function positionAfterLegalMove(position: Position, move: GameMove): Position { return applyUnchecked(position, move); }
 function* boardMoves(position: Position): Generator<Move> {
   for (let from = 0; from < 81; from++) {
     const p = position.board[from]; if (!p || p.side !== position.turn) continue;
@@ -106,34 +112,71 @@ export function* legalMoveIterator(position: Position): Generator<Move> {
   }
 }
 export const legalMoves = (position: Position): Move[] => [...legalMoveIterator(position)];
-export function positionKey(position: Position): string {
-  return `${position.turn}|${position.board.map(p => p ? `${p.side[0]}${p.type}${p.promoted ? "+" : ""}` : ".").join(",")}|${(["sente", "gote"] as Side[]).map(side => HAND_TYPES.map(t => position.hands[side][t]).join(",")).join("|")}`;
+export function canPass(position: Position, remaining: PassAllowance): boolean {
+  return (remaining[position.turn] === null || remaining[position.turn]! > 0) && !inCheck(position);
 }
-function notation(position: Position, move: Move): string {
+export function* legalActionIterator(position: Position, remaining?: PassAllowance): Generator<GameMove> {
+  yield* legalMoveIterator(position);
+  if (remaining && canPass(position, remaining)) yield { pass: true };
+}
+export function positionKey(position: Position, remaining?: PassAllowance): string {
+  const passKey = remaining && (remaining.sente !== null || remaining.gote !== null) ? `|pass:${remaining.sente ?? "-"},${remaining.gote ?? "-"}` : "";
+  return `${position.turn}|${position.board.map(p => p ? `${p.side[0]}${p.type}${p.promoted ? "+" : ""}` : ".").join(",")}|${(["sente", "gote"] as Side[]).map(side => HAND_TYPES.map(t => position.hands[side][t]).join(",")).join("|")}${passKey}`;
+}
+function notation(position: Position, move: GameMove): string {
+  if (isPassMove(move)) return `${position.turn === "sente" ? "▲" : "△"}パス`;
   const name = move.drop ? PIECE_NAMES[move.drop] : pieceName(position.board[move.from!]!);
   return `${position.turn === "sente" ? "▲" : "△"}${"１２３４５６７８９"[8 - move.to % 9]}${"一二三四五六七八九"[Math.floor(move.to / 9)]}${name}${move.drop ? "打" : move.promote ? "成" : ""}`;
 }
+function validatePassLimit(value: unknown): asserts value is number | null {
+  if (value !== null && (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0)) throw new Error("パス上限は0以上の整数、または無制限にしてください");
+}
 export class ShogiGame {
   private frames: Frame[];
-  constructor(position = initialPosition()) { this.frames = [{ position: clone(position), record: null, result: null }]; }
+  private configuredPassLimit: number | null;
+  constructor(position = initialPosition(), options: GameOptions = {}) {
+    const limit = options.passLimit === undefined ? null : options.passLimit;
+    validatePassLimit(limit); this.configuredPassLimit = limit;
+    this.frames = [{ position: clone(position), record: null, result: null, passesUsed: { sente: 0, gote: 0 } }];
+  }
+  get passLimit(): number | null { return this.configuredPassLimit; }
+  private remainingPasses(frame: Frame): PassAllowance {
+    return { sente: this.passLimit === null ? null : this.passLimit - frame.passesUsed.sente, gote: this.passLimit === null ? null : this.passLimit - frame.passesUsed.gote };
+  }
+  get passesRemaining(): PassAllowance { return this.remainingPasses(this.frames.at(-1)!); }
+  get canPass(): boolean { return !this.result && canPass(this.position, this.passesRemaining); }
+  setPassLimit(limit: number | null): void {
+    validatePassLimit(limit);
+    if (this.moveCount || this.result) throw new Error("パス上限は対局開始前に設定してください");
+    this.configuredPassLimit = limit;
+  }
   get position(): Position { return clone(this.frames.at(-1)!.position); }
   get result(): Result | null { return clone(this.frames.at(-1)!.result); }
   get records(): MoveRecord[] { return clone(this.frames.flatMap(f => f.record ? [f.record] : [])); }
   get moveCount(): number { return this.frames.length - 1; }
-  get positionHistory(): string[] { return this.frames.map(frame => positionKey(frame.position)); }
-  play(move: Move): void {
+  get positionHistory(): string[] { return this.frames.map(frame => positionKey(frame.position, this.remainingPasses(frame))); }
+  pass(): void { this.play({ pass: true }); }
+  play(move: GameMove): void {
     if (this.result) throw new Error("対局は終了しています");
     const previous = this.position;
-    const valid = legalMoveIterator(previous);
-    let found = false;
-    for (const candidate of valid) if (candidate.from === move.from && candidate.drop === move.drop && candidate.to === move.to && candidate.promote === move.promote) { found = true; break; }
-    if (!found) throw new Error("その手は指せません");
+    if (isPassMove(move)) {
+      if (Object.keys(move).length !== 1) throw new Error("パスの指し手が壊れています");
+      if (inCheck(previous)) throw new Error("王手中はパスできません");
+      if (!canPass(previous, this.passesRemaining)) throw new Error("パスの残り回数がありません");
+    } else {
+      const valid = legalMoveIterator(previous);
+      let found = false;
+      for (const candidate of valid) if (candidate.from === move.from && candidate.drop === move.drop && candidate.to === move.to && candidate.promote === move.promote) { found = true; break; }
+      if (!found) throw new Error("その手は指せません");
+    }
     const next = applyUnchecked(previous, move), check = inCheck(next);
     const record: MoveRecord = { move: clone(move), side: previous.turn, notation: notation(previous, move), check };
-    const frame: Frame = { position: next, record, result: null }; this.frames.push(frame);
-    if (legalMoveIterator(next).next().done) frame.result = { reason: check ? "mate" : "noMoves", winner: previous.turn };
+    const passesUsed = { ...this.frames.at(-1)!.passesUsed };
+    if (isPassMove(move)) passesUsed[previous.turn]++;
+    const frame: Frame = { position: next, record, result: null, passesUsed }; this.frames.push(frame);
+    if (legalActionIterator(next, this.passesRemaining).next().done) frame.result = { reason: check ? "mate" : "noMoves", winner: previous.turn };
     else {
-      const key = positionKey(next), matches = this.frames.flatMap((f, i) => positionKey(f.position) === key ? [i] : []);
+      const key = positionKey(next, this.passesRemaining), matches = this.frames.flatMap((f, i) => positionKey(f.position, this.remainingPasses(f)) === key ? [i] : []);
       if (matches.length >= 4) {
         const interval = this.frames.slice(matches.at(-4)! + 1);
         const checker = (["sente", "gote"] as Side[]).find(side => { const moves = interval.filter(f => f.record?.side === side); return moves.length > 0 && moves.every(f => f.record!.check); });
@@ -149,13 +192,20 @@ export class ShogiGame {
   }
   resign(): void { if (!this.result) this.frames.at(-1)!.result = { reason: "resign", winner: opposite(this.position.turn) }; }
   agreeDraw(): void { if (!this.result) this.frames.at(-1)!.result = { reason: "agreement", winner: null }; }
-  save(): SavedGame { const reason = this.result?.reason; return { version: 1, moves: this.records.map(r => r.move), ...((reason === "resign" || reason === "agreement") ? { ending: reason } : {}) }; }
+  save(): SavedGame { const reason = this.result?.reason; return { version: 2, passLimit: this.passLimit, moves: this.records.map(r => r.move), ...((reason === "resign" || reason === "agreement") ? { ending: reason } : {}) }; }
   static load(data: unknown): ShogiGame {
     if (!data || typeof data !== "object") throw new Error("将棋の保存データではありません");
     const d = data as SavedGame;
-    if (d.version !== 1 || !Array.isArray(d.moves) || d.moves.length > 1024 || (d.ending !== undefined && !["resign", "agreement"].includes(d.ending))) throw new Error("対応していない保存データです");
-    const game = new ShogiGame();
-    for (const move of d.moves) { if (!move || typeof move !== "object" || !Number.isInteger(move.to) || typeof move.promote !== "boolean") throw new Error("指し手が壊れています"); game.play(move); }
+    if ((d.version !== 1 && d.version !== 2) || !Array.isArray(d.moves) || d.moves.length > 1024 || (d.ending !== undefined && !["resign", "agreement"].includes(d.ending))) throw new Error("対応していない保存データです");
+    const passLimit = d.version === 1 ? 0 : d.passLimit;
+    validatePassLimit(passLimit);
+    const game = new ShogiGame(undefined, { passLimit });
+    for (const move of d.moves) {
+      if (!move || typeof move !== "object") throw new Error("指し手が壊れています");
+      if (isPassMove(move)) { if (d.version === 1) throw new Error("以前の保存形式ではパスを使用できません"); }
+      else if ("pass" in move || !Number.isInteger(move.to) || typeof move.promote !== "boolean") throw new Error("指し手が壊れています");
+      game.play(move);
+    }
     if (d.ending === "resign") game.resign(); if (d.ending === "agreement") game.agreeDraw();
     return game;
   }

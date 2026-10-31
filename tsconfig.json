@@ -6,7 +6,8 @@
     "strict": true,
     "noEmit": true,
     "skipLibCheck": true,
-    "lib": ["ES2022", "DOM"]
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "types": ["bun"]
   },
-  "include": ["src/**/*.ts", "web/**/*.ts"]
+  "include": ["src/**/*.ts", "web/**/*.ts", "test/**/*.ts"]
 }

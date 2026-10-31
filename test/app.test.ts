@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { legalMoves } from "../src/shogi";
 import type { AIRequest } from "../src/ai";
+import type { GameMove } from "../src/shogi";
 
 test("two players move, choose promotion, drop captures, undo, and restore a saved game through the UI", async () => {
   const listeners: Record<string, (e: any) => any> = {}, elements = new Map<string, any>();
@@ -18,6 +19,32 @@ test("two players move, choose promotion, drop captures, undo, and restore a sav
   const click = async (data: Record<string, string> = {}, id = "") => listeners.click({ target: { closest: () => ({ dataset: data, id, disabled: false }) } });
   const square = (i: number) => click({ square: String(i) });
   const html = () => element("#app").innerHTML as string;
+  const change = (id: string, value: string) => listeners.change({ target: { id, value } });
+  expect(html()).toContain("先手：無制限 / 後手：無制限");
+  await change("pass-limit", "1"); expect(JSON.parse(stored).game.passLimit).toBe(1);
+  await change("pass-limit", "1.5"); expect(JSON.parse(stored).game.passLimit).toBe(1);
+  expect(element("#toast").textContent).toContain("0以上の整数");
+  await square(56); await click({}, "pass");
+  expect(html()).toContain("▲パス"); expect(html()).toContain("後手の手番");
+  expect(html()).toContain("先手：残り0回 / 後手：残り1回");
+  expect(html()).not.toContain("歩の移動する場所を選んでください");
+  expect(html()).not.toContain('class="square  legal-target');
+  expect(html()).toMatch(/id="pass-limit"[^>]*disabled/);
+  await change("pass-limit", "4"); expect(JSON.parse(stored).game.passLimit).toBe(1);
+  expect(element("#toast").textContent).toContain("開始前");
+  await click({}, "pass"); expect(html()).toContain("△パス");
+  expect(html()).toMatch(/id="pass" disabled/);
+  const passBackup = JSON.parse(stored).game;
+  await click({}, "pass"); expect(JSON.parse(stored).game.moves).toHaveLength(2);
+  expect(element("#toast").textContent).toContain("残り回数");
+  await click({}, "undo"); expect(html()).toContain("先手：残り0回 / 後手：残り1回");
+  await click({}, "undo"); expect(html()).toContain("先手：残り1回 / 後手：残り1回");
+  await listeners.change({ target: { id: "file-input", files: [{ text: async () => JSON.stringify(passBackup) }], value: "" } });
+  expect(html()).toContain("▲パス"); expect(html()).toContain("△パス");
+  expect(html()).toContain("先手：残り0回 / 後手：残り0回");
+  await click({}, "restart"); expect(html()).toContain("先手：残り1回 / 後手：残り1回");
+  expect(JSON.parse(stored).game.passLimit).toBe(1);
+  await change("pass-limit", ""); expect(JSON.parse(stored).game.passLimit).toBeNull();
   expect((html().match(/data-square=/g) ?? [])).toHaveLength(81);
   expect(html()).toContain("先手の手番");
   await square(56); expect(html()).toContain("歩の移動する場所を選んでください"); expect(html()).toContain("move-dot");
@@ -60,6 +87,7 @@ test("two players move, choose promotion, drop captures, undo, and restore a sav
     [70, 34], [36, 45], [34, 33], [45, 54], [33, 24], [54, 63]
   ].map(([from, to]) => ({ from, to, promote: false }));
   await listeners.change({ target: { id: "file-input", files: [{ text: async () => JSON.stringify({ version: 1, moves: pawnCaptures }) }], value: "" } });
+  expect(JSON.parse(stored).game.passLimit).toBe(0); expect(html()).toMatch(/id="pass" disabled/);
   expect((html().match(/data-hand="P" data-side="sente"/g) ?? [])).toHaveLength(1);
   expect((html().match(/class="hand-count"[^>]*>2<\/span>/g) ?? [])).toHaveLength(2);
   expect(html()).not.toContain("<b>2</b>");
@@ -85,10 +113,9 @@ test("two players move, choose promotion, drop captures, undo, and restore a sav
     constructor() { workers.push(this); }
     postMessage(request: AIRequest) { this.request = structuredClone(request); }
     terminate() { this.terminated = true; }
-    reply() { this.onmessage?.({ data: { id: this.request.id, result: { move: legalMoves(this.request.position)[0], depth: 1, nodes: 1, score: 0 } } }); }
+    reply(move: GameMove = legalMoves(this.request.position)[0]) { this.onmessage?.({ data: { id: this.request.id, result: { move, depth: 1, nodes: 1, score: 0 } } }); }
   }
   Object.assign(globalThis, { Worker: MockWorker });
-  const change = (id: string, value: string) => listeners.change({ target: { id, value } });
   try {
     const beforeAI = JSON.parse(stored).game.moves.length;
     await change("ai-mode", "gote"); // Human is gote; AI automatically plays sente.
@@ -152,5 +179,20 @@ test("two players move, choose promotion, drop captures, undo, and restore a sav
     expect(element("#toast").textContent).toContain("AI を起動できませんでした");
     expect(JSON.parse(stored).game.moves).toHaveLength(2);
     expect(html()).not.toContain("停止予約済み");
+
+    await change("ai-mode", "sente"); await click({}, "restart");
+    await change("pass-limit", "1"); await click({}, "pass");
+    expect(JSON.parse(stored).game.moves).toEqual([{ pass: true }]);
+    await new Promise(resolve => setTimeout(resolve, 300)); expect(workers).toHaveLength(8);
+    expect(workers[7].request.options.passesRemaining).toEqual({ sente: 0, gote: 1 });
+    expect(html()).toMatch(/id="pass" disabled/);
+    await click({}, "pass"); expect(JSON.parse(stored).game.moves).toHaveLength(1);
+    expect(element("#toast").textContent).toContain("AI の手番");
+    workers[7].reply({ pass: true });
+    expect(JSON.parse(stored).game.moves).toEqual([{ pass: true }, { pass: true }]);
+    expect(html()).toContain("先手：残り0回 / 後手：残り0回");
+    expect(html()).toContain("先手の手番");
+    await click({}, "undo"); expect(html()).toContain("先手：残り0回 / 後手：残り1回");
+    await click({}, "undo"); expect(html()).toContain("先手：残り1回 / 後手：残り1回");
   } finally { await change("ai-mode", "human"); Object.assign(globalThis, { Worker: nativeWorker }); }
 });
