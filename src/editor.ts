@@ -2,23 +2,27 @@ import { emptyPosition, initialPosition, setupIssues, validateBoardSize, validat
 import type { Piece, Position, Side } from "./shogi";
 import { loadPieceRules, updatePieceMovements, resetPieceMovements } from "./pieces";
 import type { PieceRules, PieceType, PieceAction, PieceMovement } from "./pieces";
+import { loadRuleScript, validateRuleScript } from "./rulescript";
 
 export class BoardEditor {
   private draft: Position;
   private rules: PieceRules;
-  private history: Array<{ position: Position; rules: PieceRules }> = [];
-  constructor(position: Position, rules?: PieceRules) { this.rules = loadPieceRules(rules); validatePosition(position, this.rules); this.draft = structuredClone(position); }
+  private script: string;
+  private history: Array<{ position: Position; rules: PieceRules; script: string }> = [];
+  constructor(position: Position, rules?: PieceRules, ruleScript = "") { this.rules = loadPieceRules(rules); this.script = loadRuleScript(ruleScript); validatePosition(position, this.rules); this.draft = structuredClone(position); }
   get position(): Position { return structuredClone(this.draft); }
   get pieceRules(): PieceRules { return structuredClone(this.rules); }
+  get ruleScript(): string { return this.script; }
   get canUndo(): boolean { return this.history.length > 0; }
-  get issues(): string[] { return setupIssues(this.draft, this.rules); }
-  private commit(next: Position, rules = this.rules): void {
+  get issues(): string[] { try { return setupIssues(this.draft, this.rules, this.script); } catch (error) { return [(error as Error).message]; } }
+  private commit(next: Position, rules = this.rules, script = this.script): void {
     validatePosition(next, rules);
-    if (JSON.stringify(next) === JSON.stringify(this.draft) && JSON.stringify(rules) === JSON.stringify(this.rules)) return;
-    this.history.push({ position: this.draft, rules: this.rules });
+    if (JSON.stringify(next) === JSON.stringify(this.draft) && JSON.stringify(rules) === JSON.stringify(this.rules) && script === this.script) return;
+    this.history.push({ position: this.draft, rules: this.rules, script: this.script });
     if (this.history.length > 100) this.history.shift();
     this.draft = structuredClone(next);
     this.rules = structuredClone(rules);
+    this.script = script;
   }
   resize(width: number, height: number): void {
     validateBoardSize(width, height);
@@ -43,6 +47,7 @@ export class BoardEditor {
     this.commit(this.position, resetPieceMovements(this.rules, type, promoted));
   }
   setPieceRules(rules: PieceRules): void { this.commit(this.position, loadPieceRules(rules)); }
-  reset(position = initialPosition(), rules = this.rules): void { this.commit(position, loadPieceRules(rules)); }
-  undo(): void { const previous = this.history.pop(); if (previous) { this.draft = previous.position; this.rules = previous.rules; } }
+  setRuleScript(source: string): void { source = loadRuleScript(source); validateRuleScript(source, this.rules); this.commit(this.position, this.rules, source); }
+  reset(position = initialPosition(), rules = this.rules, ruleScript = this.script): void { this.commit(position, loadPieceRules(rules), loadRuleScript(ruleScript)); }
+  undo(): void { const previous = this.history.pop(); if (previous) { this.draft = previous.position; this.rules = previous.rules; this.script = previous.script; } }
 }

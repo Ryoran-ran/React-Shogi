@@ -1,3 +1,5 @@
+import { loadRuleScript } from "./scriptconfig";
+
 /** dx is positive to the board's right; dy is positive towards the opponent. */
 export interface PieceMovement {
   readonly dx: number;
@@ -129,6 +131,7 @@ export type PieceActions = Pick<PieceStateDefinition, PieceAction> & { readonly 
 export interface PieceDesign { readonly text: string; readonly fill: string; readonly color: string; readonly shape: "shogi" | "circle" | "square" }
 export type DesignSide = "sente" | "gote";
 export interface PieceRuleEntry {
+  readonly script?: string;
   readonly definition?: PieceDefinition;
   readonly normal?: PieceActions;
   readonly promoted?: PieceActions;
@@ -239,6 +242,8 @@ export function pieceDesign(piece: { type: PieceType; promoted: boolean; side: D
 }
 export function pieceTypeLabel(type: PieceType, rules?: PieceRules): string { const definition = pieceDefinition(type, rules); return isBuiltinPiece(type) ? definition.label : definition.name; }
 export function hasPieceLibrary(rules?: PieceRules): boolean { return Object.values(rules ?? {}).some(entry => !!(entry?.definition || entry?.design)); }
+export function hasPieceScripts(rules?: PieceRules): boolean { return Object.values(rules ?? {}).some(entry => !!entry?.script); }
+export function hasRuleScripts(source: string | undefined, rules?: PieceRules): boolean { return !!source || hasPieceScripts(rules); }
 
 /** Validate imported definitions, actions and designs; omit unchanged built-in settings. */
 export function loadPieceRules(data: unknown = {}): PieceRules {
@@ -246,7 +251,7 @@ export function loadPieceRules(data: unknown = {}): PieceRules {
   let customCount = 0;
   for (const key of Object.keys(source)) {
     const entry = ruleRecord(source[key]);
-    if (Object.keys(entry).some(key => !["definition", "normal", "promoted", "design"].includes(key))) throw new Error("駒の状態の設定が壊れています");
+    if (Object.keys(entry).some(key => !["definition", "normal", "promoted", "design", "script"].includes(key))) throw new Error("駒の状態の設定が壊れています");
     if (isBuiltinPiece(key)) { if (entry.definition !== undefined) throw new Error("標準の駒の定義は置き換えられません"); }
     else {
       if (!/^custom_[a-z0-9_-]{1,48}$/.test(key) || ++customCount > MAX_CUSTOM_PIECES) throw new Error(`追加できる駒は${MAX_CUSTOM_PIECES}種類までです`);
@@ -255,7 +260,8 @@ export function loadPieceRules(data: unknown = {}): PieceRules {
   }
   for (const key of Object.keys(source)) {
     const type = key as PieceType, entry = ruleRecord(source[key]), definition = pieceDefinition(type, result);
-    const states: { definition?: PieceDefinition; normal?: PieceActions; promoted?: PieceActions; design?: { normal?: Partial<Record<DesignSide, PieceDesign>>; promoted?: Partial<Record<DesignSide, PieceDesign>> } } = { ...result[type] };
+    const states: { script?: string; definition?: PieceDefinition; normal?: PieceActions; promoted?: PieceActions; design?: { normal?: Partial<Record<DesignSide, PieceDesign>>; promoted?: Partial<Record<DesignSide, PieceDesign>> } } = { ...result[type] };
+    if (entry.script !== undefined) { const script = loadRuleScript(entry.script); if (script) states.script = script; }
     for (const stateKey of ["normal", "promoted"] as const) {
       if (entry[stateKey] === undefined) continue;
       if (stateKey === "promoted" && !definition.promotion) throw new Error("この駒に成り後の動きは設定できません");
@@ -289,6 +295,10 @@ export function updatePieceDesign(rules: PieceRules, type: PieceType, promoted: 
   const entry = rules[type], state = promoted ? "promoted" : "normal";
   return loadPieceRules({ ...rules, [type]: { ...entry, design: { ...entry?.design, [state]: { ...entry?.design?.[state], [side]: design } } } });
 }
+export function updatePieceScript(rules: PieceRules, type: PieceType, source: string): PieceRules {
+  pieceDefinition(type, rules);
+  return loadPieceRules({ ...rules, [type]: { ...rules[type], script: loadRuleScript(source) } });
+}
 export function resetPieceDesign(rules: PieceRules, type: PieceType, promoted: boolean, side: DesignSide): PieceRules {
   return updatePieceDesign(rules, type, promoted, side, defaultPieceDesign({ type, promoted, side }, rules));
 }
@@ -300,12 +310,13 @@ export function addCustomPiece(rules: PieceRules, template?: PieceType): { rules
   let name = base.slice(0, MAX_PIECE_NAME_LENGTH), suffix = 2;
   while (names.has(name)) { const ending = ` ${suffix++}`; name = base.slice(0, MAX_PIECE_NAME_LENGTH - ending.length) + ending; }
   const normal = template ? pieceState({ type: template, promoted: false }, rules) : null;
+  const script = template && rules[template]?.script ? { script: rules[template]!.script } : {};
   const modes = template ? Object.fromEntries((["normal", "promoted"] as const).filter(key => rules[template]?.[key]?.separateCapture).map(key => [key, { moves: pieceState({ type: template, promoted: key === "promoted" }, rules).moves, captures: pieceState({ type: template, promoted: key === "promoted" }, rules).captures, separateCapture: true }])) : {};
   const definition: PieceDefinition = { name, label: source?.label ?? "新", description: source?.description ?? "オリジナルの駒です。", value: source?.value ?? 500, moves: normal?.moves ?? [], captures: normal?.captures ?? [], ...(source?.promotion && template ? { promotion: { ...pieceState({ type: template, promoted: true }, rules), forcedRanks: source.promotion.forcedRanks } } : {}) };
   const design: NonNullable<PieceRuleEntry["design"]> = template ? { normal: { sente: pieceDesign({ type: template, promoted: false, side: "sente" }, rules), gote: pieceDesign({ type: template, promoted: false, side: "gote" }, rules) }, ...(source?.promotion ? { promoted: { sente: pieceDesign({ type: template, promoted: true, side: "sente" }, rules), gote: pieceDesign({ type: template, promoted: true, side: "gote" }, rules) } } : {}) } : {};
   // Custom definitions use one logical name; player-specific lettering is kept in the design.
-  if (definition.promotion) { const { goteName: _name, goteLabel: _label, ...promotion } = definition.promotion; return { type, rules: loadPieceRules({ ...rules, [type]: { definition: { ...definition, promotion }, design, ...modes } }) }; }
-  return { type, rules: loadPieceRules({ ...rules, [type]: { definition, design, ...modes } }) };
+  if (definition.promotion) { const { goteName: _name, goteLabel: _label, ...promotion } = definition.promotion; return { type, rules: loadPieceRules({ ...rules, [type]: { definition: { ...definition, promotion }, design, ...modes, ...script } }) }; }
+  return { type, rules: loadPieceRules({ ...rules, [type]: { definition, design, ...modes, ...script } }) };
 }
 export function updateCustomPiece(rules: PieceRules, type: PieceType, change: { name?: string; canPromote?: boolean }): PieceRules {
   if (isBuiltinPiece(type)) throw new Error("追加した駒を選んでください");

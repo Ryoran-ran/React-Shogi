@@ -1,10 +1,11 @@
-import { ShogiGame, SIDE_NAMES, MIN_BOARD_SIZE, MAX_BOARD_SIZE, initialPosition, emptyPosition, setupIssues, fileLabel, rankLabel, promotionDepth, pieceName, legalMoves, inCheck, positionKey, isPassMove } from "../src/shogi";
+import { ShogiGame, SIDE_NAMES, MIN_BOARD_SIZE, MAX_BOARD_SIZE, initialPosition, emptyPosition, setupIssues, fileLabel, rankLabel, promotionDepth, pieceName, legalMoves, inCheck, positionKey, isPassMove, ruleChoiceForMove } from "../src/shogi";
 import type { GameMove, Move, HandType, Side, Piece, PieceType, Position } from "../src/shogi";
 import { BoardEditor } from "../src/editor";
 import { canPromote, pieceDescription, pieceTypes, handTypes, pieceTypeLabel } from "../src/pieces";
 import type { PieceRules } from "../src/pieces";
 import { renderPiece } from "../src/pieceview";
 import { PieceEditor } from "../src/pieceeditor";
+import { ScriptEditor } from "../src/scripteditor";
 import { createSetup, copySetup, availableSetupName, loadSetup, readLocalSetups, saveLocalSetup, removeLocalSetup, setupFilename, MAX_SETUP_NAME_LENGTH } from "../src/setups";
 import type { SavedSetup, LocalSetup } from "../src/setups";
 import type { AIReply, AIRequest } from "../src/ai";
@@ -16,7 +17,7 @@ type Screen = "title" | "workshop" | "game";
 type GameKind = "standard" | "custom";
 let screen: Screen = "title", screenVersion = 0, workshopAction: "edit" | "play" = "play", editorReturn: "game" | "workshop" = "game";
 let gameKind: GameKind = "standard", gameName = "普通の将棋", hasGameSession = false;
-let game = new ShogiGame(undefined, { passLimit: 0 }), selected: number | HandType | null = null, flipped = false, pending: Move[] = [], toastTimer: ReturnType<typeof setTimeout>;
+let game = new ShogiGame(undefined, { passLimit: 0 }), selected: number | HandType | null = null, flipped = false, pending: GameMove[] = [], toastTimer: ReturnType<typeof setTimeout>;
 let saved = true, loadWarning = "", historyOpen = false, selectedHandIndex = -1;
 let resultOpen = false, resultAnimate = false;
 let editor: BoardEditor | null = null, editorPiece: PieceType | "erase" = "P", editorSide: Side = "sente", editorPromoted = false, editorSquare = -1;
@@ -24,6 +25,8 @@ let editorSetupName = "", editorPassLimitText = "", editorPassLimitBadInput = fa
 let editorSavedSetups: LocalSetup[] = [], editorStorageError = "";
 let editorSaveAsOpen = false, editorSaveAsName = "";
 let pieceEditor: PieceEditor | null = null;
+let scriptEditor: ScriptEditor | null = null;
+let composingField: EventTarget | null = null;
 let editorBoardScroll: Array<readonly [string, number]> | null = null;
 type AIMode = "human" | "sente" | "gote" | "both";
 type AIStrength = "fast" | "standard";
@@ -38,8 +41,8 @@ function downloadJSON(data: unknown, filename: string): void {
   finally { setTimeout(() => URL.revokeObjectURL(url), 1000); }
 }
 function persist() { try { localStorage.setItem(storageKey, JSON.stringify({ game: game.save(), gameKind, gameName, flipped, aiMode, aiStrength, aiPaused })); saved = true; } catch { saved = false; notify("自動保存できません。棋譜を保存してください。"); } }
-function inferGameKind(match: ShogiGame): GameKind { return match.passLimit === 0 && !Object.keys(match.pieceRules).length && positionKey(match.initialPosition) === positionKey(initialPosition()) ? "standard" : "custom"; }
-function setScreen(next: Screen): void { screen = next; screenVersion++; }
+function inferGameKind(match: ShogiGame): GameKind { return match.passLimit === 0 && !Object.keys(match.pieceRules).length && !match.ruleScript && positionKey(match.initialPosition) === positionKey(initialPosition()) ? "standard" : "custom"; }
+function setScreen(next: Screen): void { screen = next; screenVersion++; composingField = null; }
 function isHumanAIMode(): boolean { return aiMode === "sente" || aiMode === "gote"; }
 function activateHumanAI(): void { if (isHumanAIMode()) aiRunning = screen === "game" && !aiPaused && !game.result && !editor; }
 function execute(move: GameMove) { game.play(move); selected = null; selectedHandIndex = -1; pending = []; if (game.result) presentResult(); else activateHumanAI(); persist(); render(); scheduleAI(); }
@@ -49,7 +52,7 @@ function presentResult(animate = true): void {
 }
 function dismissResult(): void { resultOpen = false; resultAnimate = false; render(); $("#show-result").focus(); }
 function restartGame(): void {
-  stopAI(); game = new ShogiGame(game.initialPosition, { passLimit: game.passLimit, pieceRules: game.pieceRules }); selected = null; selectedHandIndex = -1; pending = []; historyOpen = false; resultOpen = false; resultAnimate = false;
+  stopAI(); game = new ShogiGame(game.initialPosition, { passLimit: game.passLimit, pieceRules: game.pieceRules, ruleScript: game.ruleScript }); selected = null; selectedHandIndex = -1; pending = []; historyOpen = false; resultOpen = false; resultAnimate = false;
   aiPaused = false; activateHumanAI(); aiStartPly = 0; persist(); render(); scheduleAI();
 }
 function undoMove(): void {
@@ -98,15 +101,17 @@ function requestAIMove(): void {
       try { execute(move); } catch (error) { failAI(`AI の手を適用できません：${(error as Error).message}`); }
     };
     worker.onerror = () => { if (aiWorker !== worker || aiRequestId !== id) return; failAI(`AI を起動できませんでした。「${isHumanAIMode() ? "AIを再開" : "自動開始"}」で再試行してください。`); };
-    const request: AIRequest = { id, position, options: { maxDepth: aiStrength === "fast" ? 2 : 3, maxNodes: aiStrength === "fast" ? 1600 : 8000, maxTimeMs: aiStrength === "fast" ? 180 : 700, previousPositions: game.positionHistory, passesRemaining: game.passesRemaining, pieceRules: game.pieceRules } };
+    const request: AIRequest = { id, position, options: { maxDepth: aiStrength === "fast" ? 2 : 3, maxNodes: aiStrength === "fast" ? 1600 : 8000, maxTimeMs: aiStrength === "fast" ? 180 : 700, previousPositions: game.positionHistory, passesRemaining: game.passesRemaining, pieceRules: game.pieceRules, ruleScript: game.ruleScript } };
     worker.postMessage(request);
   } catch (error) { failAI(`AI を起動できません：${(error as Error).message}`); }
 }
 function passControls(): string {
   if (gameKind === "standard") return "";
   const remaining = game.passesRemaining, blocked = aiBusy || (aiRunning && isAITurn());
-  const reason = game.result ? "対局は終了しています" : blocked ? "AI の手番です" : inCheck(game.position, game.position.turn, game.pieceRules) ? "王手中はパスできません" : !game.canPass ? "パスの残り回数がありません" : "盤面を変えずに手番を相手に渡します";
-  return `<div class="pass-controls" role="group" aria-label="パスの追加ルール"><button id="pass" ${blocked || pending.length || !game.canPass ? "disabled" : ""} title="${reason}">パスする</button><span class="pass-remaining" role="status">${(["sente", "gote"] as Side[]).map(side => `${SIDE_NAMES[side]}：${remaining[side] === null ? "無制限" : `残り${remaining[side]}回`}`).join(" / ")}</span><label class="pass-limit-label">パス上限（各自）<input id="pass-limit" type="number" min="0" step="1" value="${game.passLimit ?? ""}" placeholder="無制限" aria-label="各プレイヤーのパス上限" aria-describedby="pass-limit-hint" ${game.moveCount || game.result || aiBusy ? "disabled" : ""}></label><small id="pass-limit-hint">空欄＝無制限・0＝不可（開始前のみ変更）</small></div>`;
+  let available = false, ruleError = "";
+  try { available = game.canPass; } catch (error) { ruleError = (error as Error).message; }
+  const reason = ruleError || (game.result ? "対局は終了しています" : blocked ? "AI の手番です" : inCheck(game.position, game.position.turn, game.pieceRules) ? "王手中はパスできません" : !available ? remaining[game.position.turn] === 0 ? "パスの残り回数がありません" : "追加ルールでパスが禁止されています" : "盤面を変えずに手番を相手に渡します");
+  return `<div class="pass-controls" role="group" aria-label="パスの追加ルール"><button id="pass" ${blocked || pending.length || !available ? "disabled" : ""} title="${esc(reason)}">パスする</button><span class="pass-remaining" role="status">${(["sente", "gote"] as Side[]).map(side => `${SIDE_NAMES[side]}：${remaining[side] === null ? "無制限" : `残り${remaining[side]}回`}`).join(" / ")}</span><label class="pass-limit-label">パス上限（各自）<input id="pass-limit" type="number" min="0" step="1" value="${game.passLimit ?? ""}" placeholder="無制限" aria-label="各プレイヤーのパス上限" aria-describedby="pass-limit-hint" ${game.moveCount || game.result || aiBusy ? "disabled" : ""}></label><small id="pass-limit-hint">空欄＝無制限・0＝不可（開始前のみ変更）</small>${ruleError ? `<small class="pass-rule-error">${esc(ruleError)}。配置を編集してコードを修正できます。</small>` : ""}</div>`;
 }
 function aiControls(): string {
   const modes: Array<[AIMode, string]> = [["human", "2人で指す"], ["sente", "自分：先手 / AI：後手"], ["gote", "自分：後手 / AI：先手"], ["both", "AI同士（動作確認）"]];
@@ -117,10 +122,11 @@ function resultText(): string {
   const r = game.result; if (!r) return "";
   if (r.reason === "repetition") return "千日手・指し直し";
   if (r.reason === "agreement") return "合意による引き分け";
+  if (r.reason === "script" && r.winner === null) return "追加ルールによる引き分け";
   return `${SIDE_NAMES[r.winner!]}の勝ち`;
 }
 function resultReason(): string {
-  const r = game.result; return r ? ({ mate: "詰みが成立しました", noMoves: "指せる手がなくなりました", repetition: "同じ局面が4回現れました", perpetualCheck: "連続王手の千日手です", resign: "投了によって対局が終了しました", agreement: "両者の合意で対局を終了しました" })[r.reason] : "";
+  const r = game.result; return r ? ({ mate: "詰みが成立しました", noMoves: "指せる手がなくなりました", repetition: "同じ局面が4回現れました", perpetualCheck: "連続王手の千日手です", resign: "投了によって対局が終了しました", agreement: "両者の合意で対局を終了しました", script: "追加ルールによって対局が終了しました" })[r.reason] : "";
 }
 function resultDialog(): string {
   const result = game.result; if (!result) return "";
@@ -128,7 +134,7 @@ function resultDialog(): string {
   const variant = result.winner === null ? "draw" : humanSide && result.winner !== humanSide ? "loss" : "win";
   const title = humanSide && result.winner ? variant === "win" ? "あなたの勝ちです" : "あなたの負けです" : resultText();
   const stamp = variant === "win" ? "勝利" : variant === "loss" ? "敗北" : result.reason === "repetition" ? "再戦" : "引分";
-  const tag = { mate: "詰み", noMoves: "指し手なし", repetition: "千日手", perpetualCheck: "連続王手の千日手", resign: "投了", agreement: "合意" }[result.reason];
+  const tag = { mate: "詰み", noMoves: "指し手なし", repetition: "千日手", perpetualCheck: "連続王手の千日手", resign: "投了", agreement: "合意", script: "追加ルール" }[result.reason];
   const particles = resultAnimate && variant === "win" ? `<div class="result-particles" aria-hidden="true">${Array.from({ length: 12 }, (_, i) => `<i style="--particle:${i};--drift:${(i % 2 ? 1 : -1) * (22 + i * 9)}px;--delay:${i % 4 * 65}ms"></i>`).join("")}</div>` : "";
   return `<div class="result-backdrop ${resultAnimate ? "is-fresh" : ""}"><section class="result-dialog result-${variant}" role="dialog" aria-modal="true" aria-labelledby="result-title" aria-describedby="result-description"><button id="result-close" class="result-close" aria-label="結果を閉じる">×</button>${particles}<p class="result-label">対局終了</p><div class="result-emblem" aria-hidden="true"><span>${stamp}</span></div><h2 id="result-title">${esc(title)}</h2><p id="result-description">${esc(resultReason())}</p><div class="result-players">${(["sente", "gote"] as Side[]).map(side => `<div class="${result.winner === side ? "winner" : ""}"><span>${side === "sente" ? "▲" : "△"} ${SIDE_NAMES[side]}</span><strong>${result.winner === null ? result.reason === "repetition" ? "指し直し" : "引き分け" : result.winner === side ? "勝ち" : "負け"}</strong></div>`).join("")}</div><div class="result-summary"><span>${esc(tag)}</span><span>${game.moveCount} 手で終局</span></div><div class="result-actions"><button id="result-restart" class="result-primary">もう一局</button><button id="result-export">棋譜を保存</button></div><button id="result-view-board" class="text-button result-view-board">終局した盤面を見る</button><button id="result-home" class="text-button result-view-board">タイトルへ</button></section></div>`;
 }
@@ -144,13 +150,15 @@ function handHTML(side: Side): string {
   return `<section class="hand-card hand-stand ${top ? "stand-upper-left" : "stand-lower-right"} ${active ? "active-player" : ""}" data-player="${side}" aria-label="${SIDE_NAMES[side]}の持ち駒"><div class="hand-pieces">${piles}</div></section>`;
 }
 function render() {
-  if (editor) { if (pieceEditor) renderPieceEditorScreen(); else renderEditor(); return; }
+  if (editor) { if (scriptEditor) $("#app").innerHTML = scriptEditor.render(); else if (pieceEditor) renderPieceEditorScreen(); else renderEditor(); return; }
   if (screen === "title") { renderTitle(); return; }
   if (screen === "workshop") { renderWorkshop(); return; }
   const position = game.position, rules = game.pieceRules, records = game.records, result = game.result, check = !result && inCheck(position, position.turn, rules);
   const automaticOpponent = isHumanAIMode() && !aiPaused;
   const undoDisabled = !records.length && !result || automaticOpponent && !result && !records.some(record => record.side === aiMode);
-  const targets = selected === null || result ? [] : legalMoves(position, rules).filter(m => typeof selected === "number" ? m.from === selected : m.drop === selected);
+  let targets: Move[] = [];
+  try { targets = selected === null || result ? [] : legalMoves(position, rules, game.ruleScript).filter(m => typeof selected === "number" ? m.from === selected : m.drop === selected); }
+  catch (error) { selected = null; notify((error as Error).message); }
   const destinations = new Set(targets.map(m => m.to));
   const indices = Array.from({ length: position.board.length }, (_, i) => flipped ? position.board.length - 1 - i : i), lastAction = records.at(-1)?.move;
   const lastMove = lastAction && !isPassMove(lastAction) ? lastAction : undefined;
@@ -161,30 +169,30 @@ function render() {
   $("#app").innerHTML = `<header class="site-header" ${pending.length || resultOpen ? "inert" : ""}><a class="brand game-brand" href="/" aria-label="タイトルへ"><span class="brand-icon">将</span><span>${esc(gameName)}<small>${gameKind === "standard" ? "STANDARD SHOGI" : "EDITED SHOGI"}</small></span></a><div class="header-tools"><button id="to-title" class="text-button">タイトルへ</button>${gameKind === "custom" ? `<button id="edit-board" class="text-button">配置を編集</button>` : ""}<button id="import" class="text-button">棋譜を開く</button><button id="export" class="text-button">棋譜を保存 ↗</button></div></header><main ${pending.length || resultOpen ? "inert" : ""}><div class="game-meta">${aiControls()}<span class="save-label ${saved ? "" : "unsaved"}"><i></i>${saved ? "対局を自動保存" : "保存できていません"}</span></div><div class="game-layout"><section class="board-section" aria-label="将棋盤"><div class="board-status"><span class="live-mark ${result ? "ended" : ""}"></span><strong>${result ? esc(resultText()) : `${position.turn === "sente" ? "▲" : "△"} ${SIDE_NAMES[position.turn]}の手番`}</strong>${result ? `<button id="show-result" class="text-button result-reopen">結果を見る</button>` : ""}<span class="move-number">${result ? `${records.length} 手で終局` : `${records.length + 1} 手目`}${check ? `<b class="check-label">王手</b>` : ""}</span></div><div class="board-viewport"><div class="board-arena" style="--board-width:${position.width};--board-height:${position.height}">${handHTML(flipped ? "sente" : "gote")}<div class="board-surround"><div class="file-labels">${[...files].map(x => `<span>${x}</span>`).join("")}</div><div class="board-and-ranks"><div class="board">${indices.map(index => {
     const p = position.board[index], selectedSquare = selected === index, target = destinations.has(index), last = lastMove && (lastMove.to === index || lastMove.from === index), kingChecked = check && p?.type === "K" && p.side === position.turn;
     return `<button class="square ${selectedSquare ? "selected-square" : ""} ${target ? "legal-target" : ""} ${last ? "last-move" : ""} ${kingChecked ? "king-check" : ""}" data-square="${index}" aria-label="${position.width - index % position.width}筋${Math.floor(index / position.width) + 1}段${p ? ` ${SIDE_NAMES[p.side]} ${esc(pieceName(p, rules))}` : " 空きマス"}${target ? " 移動可能" : ""}" ${result ? "disabled" : ""}>${p ? pieceHTML(p, rules) : target ? `<span class="move-dot"></span>` : ""}${target && p ? `<span class="capture-ring"></span>` : ""}</button>`;
-  }).join("")}${position.width === 9 && position.height === 9 ? `<i class="star s1"></i><i class="star s2"></i><i class="star s3"></i><i class="star s4"></i>` : ""}</div><div class="rank-labels">${[...ranks].map(y => `<span>${y}</span>`).join("")}</div></div></div>${handHTML(flipped ? "gote" : "sente")}</div></div><div class="board-caption"><span><i class="legend-dot"></i>移動できるマス</span><span><i class="legend-square"></i>直前の一手</span><button id="open-history" class="text-button">棋譜を見る</button><button id="flip" class="text-button">↻ 盤面を反転</button></div><div class="instruction"><span class="instruction-icon">${result ? "結" : esc(selectionName || "一")}</span><div><strong>${result ? esc(resultText()) : selected !== null ? `${esc(selectionName)}の${typeof selected === "string" ? "打つ" : "移動する"}場所を選んでください` : "手番の駒を選んでください"}</strong><p>${result ? esc(resultReason()) : selectedPiece ? esc(pieceDescription(selectedPiece, rules)) : selected !== null ? "点が表示されたマスに打てます。もう一度持ち駒を押すと選択を解除します。" : "駒をクリックすると、移動できるマスに印が付きます。"}</p></div></div></section><aside class="record-column"><section class="record-card ${historyOpen ? "history-open" : ""}" ${historyOpen ? 'role="dialog" aria-modal="true" aria-label="棋譜"' : ""}><div class="record-heading"><div><span class="eyebrow">MOVE RECORD</span><h2>これまでの一手</h2></div><span class="record-count">${records.length} 手</span><button id="close-history" class="text-button" aria-label="棋譜を閉じる">閉じる ×</button></div><div class="record-list" aria-live="polite">${records.length ? records.map((r, i) => `<div class="record-row ${i === records.length - 1 ? "latest" : ""}"><span>${String(i + 1).padStart(2, "0")}</span><strong>${esc(r.notation)}</strong><small>${r.check ? "王手" : ""}</small></div>`).join("") : `<div class="empty-record"><span>歩</span><h3>まだ、まっさらな盤面。</h3><p>先手から一手、指してみましょう。<br>ここに棋譜が積み重なります。</p></div>`}</div><div class="record-footer"><span>${result ? "対局終了" : `${position.width}×${position.height}盤・時間制限なし`}</span><span>先手 ▲ / 後手 △</span></div></section><div class="game-controls"><button id="undo" ${undoDisabled ? "disabled" : ""}>${automaticOpponent ? "↶ 待った" : "↶ 一手戻す"}</button><button id="restart">新しく始める</button><button id="resign" class="quiet" ${result || aiBusy || (aiRunning && isAITurn()) ? "disabled" : ""}>投了する</button><button id="draw" class="quiet" ${result ? "disabled" : ""}>合意で引き分け</button></div><details class="help"><summary>はじめての方へ <span>＋</span></summary><p>先手は上、後手は下へ進みます。相手の駒を取ると持ち駒になり、次の手番から盤面へ打てます。</p><p>敵陣の${promotionDepth(position.height)}段以内に入る・出る・中で動くとき、駒によっては「成る」を選べます。</p><p>王手を受けたら解消する手を指します。相手の王を逃げられなくすると勝ちです。</p><p>二歩・打ち歩詰め・王手放置など、指せない手は選択肢に表示しません。</p></details></aside></div></main><footer ${pending.length || resultOpen ? "inert" : ""}>将棋からはじまる、自分だけの遊び。<span>LOCAL TWO-PLAYER SHOGI</span></footer>${historyOpen ? `<button id="history-backdrop" class="history-backdrop" aria-label="棋譜を閉じる" tabindex="-1"></button>` : ""}<input id="file-input" type="file" accept=".json,application/json" hidden>${pending.length ? promotionDialog() : ""}${resultOpen ? resultDialog() : ""}`;
+  }).join("")}${position.width === 9 && position.height === 9 ? `<i class="star s1"></i><i class="star s2"></i><i class="star s3"></i><i class="star s4"></i>` : ""}</div><div class="rank-labels">${[...ranks].map(y => `<span>${y}</span>`).join("")}</div></div></div>${handHTML(flipped ? "gote" : "sente")}</div></div><div class="board-caption"><span><i class="legend-dot"></i>移動できるマス</span><span><i class="legend-square"></i>直前の一手</span><button id="open-history" class="text-button">棋譜を見る</button><button id="flip" class="text-button">↻ 盤面を反転</button></div><div class="instruction"><span class="instruction-icon">${result ? "結" : esc(selectionName || "一")}</span><div><strong>${result ? esc(resultText()) : selected !== null ? `${esc(selectionName)}の${typeof selected === "string" ? "打つ" : "移動する"}場所を選んでください` : "手番の駒を選んでください"}</strong><p>${result ? esc(resultReason()) : selectedPiece ? esc(pieceDescription(selectedPiece, rules)) : selected !== null ? "点が表示されたマスに打てます。もう一度持ち駒を押すと選択を解除します。" : "駒をクリックすると、移動できるマスに印が付きます。"}</p></div></div></section><aside class="record-column"><section class="record-card ${historyOpen ? "history-open" : ""}" ${historyOpen ? 'role="dialog" aria-modal="true" aria-label="棋譜"' : ""}><div class="record-heading"><div><span class="eyebrow">MOVE RECORD</span><h2>これまでの一手</h2></div><span class="record-count">${records.length} 手</span><button id="close-history" class="text-button" aria-label="棋譜を閉じる">閉じる ×</button></div><div class="record-list" aria-live="polite">${records.length ? records.map((r, i) => `<div class="record-row ${i === records.length - 1 ? "latest" : ""}"><span>${String(i + 1).padStart(2, "0")}</span><strong>${esc(r.notation)}</strong><small title="${esc(r.effects?.join("・") ?? "")}">${r.check ? "王手" : ""}${r.effects?.length ? ` 効果${r.effects.length}件` : ""}</small></div>`).join("") : `<div class="empty-record"><span>歩</span><h3>まだ、まっさらな盤面。</h3><p>先手から一手、指してみましょう。<br>ここに棋譜が積み重なります。</p></div>`}</div><div class="record-footer"><span>${result ? "対局終了" : `${position.width}×${position.height}盤・時間制限なし`}</span><span>先手 ▲ / 後手 △</span></div></section><div class="game-controls"><button id="undo" ${undoDisabled ? "disabled" : ""}>${automaticOpponent ? "↶ 待った" : "↶ 一手戻す"}</button><button id="restart">新しく始める</button><button id="resign" class="quiet" ${result || aiBusy || (aiRunning && isAITurn()) ? "disabled" : ""}>投了する</button><button id="draw" class="quiet" ${result ? "disabled" : ""}>合意で引き分け</button></div><details class="help"><summary>はじめての方へ <span>＋</span></summary><p>先手は上、後手は下へ進みます。相手の駒を取ると持ち駒になり、次の手番から盤面へ打てます。</p><p>敵陣の${promotionDepth(position.height)}段以内に入る・出る・中で動くとき、駒によっては「成る」を選べます。</p><p>王手を受けたら解消する手を指します。相手の王を逃げられなくすると勝ちです。</p><p>二歩・打ち歩詰め・王手放置など、指せない手は選択肢に表示しません。</p></details></aside></div></main><footer ${pending.length || resultOpen ? "inert" : ""}>将棋からはじまる、自分だけの遊び。<span>LOCAL TWO-PLAYER SHOGI</span></footer>${historyOpen ? `<button id="history-backdrop" class="history-backdrop" aria-label="棋譜を閉じる" tabindex="-1"></button>` : ""}<input id="file-input" type="file" accept=".json,application/json" hidden>${pending.length ? promotionDialog() : ""}${resultOpen ? resultDialog() : ""}`;
   const list = $(".record-list"); if (list) list.scrollTop = list.scrollHeight;
   if (resultOpen) $("#result-view-board").focus();
 }
 function goTitle(): void {
-  stopAI(); editor = null; pieceEditor = null; editorBoardScroll = null; selected = null; selectedHandIndex = -1; pending = []; historyOpen = false; resultOpen = false; resultAnimate = false;
+  stopAI(); editor = null; pieceEditor = null; scriptEditor = null; editorBoardScroll = null; selected = null; selectedHandIndex = -1; pending = []; historyOpen = false; resultOpen = false; resultAnimate = false;
   setScreen("title"); render(); $("#title-standard").focus();
 }
 function continueGame(): void {
   if (!hasGameSession) return;
-  stopAI(); editor = null; pieceEditor = null; editorBoardScroll = null; selected = null; selectedHandIndex = -1; pending = []; historyOpen = false;
+  stopAI(); editor = null; pieceEditor = null; scriptEditor = null; editorBoardScroll = null; selected = null; selectedHandIndex = -1; pending = []; historyOpen = false;
   resultOpen = game.result !== null; resultAnimate = false; setScreen("game");
   activateHumanAI(); aiStartPly = game.moveCount; render(); scheduleAI();
 }
 function openWorkshop(action: "edit" | "play" = "play"): void {
-  stopAI(); editor = null; pieceEditor = null; editorBoardScroll = null; selected = null; pending = []; historyOpen = false; resultOpen = false;
+  stopAI(); editor = null; pieceEditor = null; scriptEditor = null; editorBoardScroll = null; selected = null; pending = []; historyOpen = false; resultOpen = false;
   workshopAction = action; setScreen("workshop"); refreshSavedSetups(); render();
 }
 function startMatch(setup: SavedSetup, kind: GameKind): boolean {
-  const issues = setupIssues(setup.position, setup.pieceRules); if (issues.length) throw new Error(issues[0]);
+  const issues = setupIssues(setup.position, setup.pieceRules, setup.ruleScript); if (issues.length) throw new Error(issues[0]);
   if (hasGameSession && (game.moveCount || game.result || gameKind === "custom") && !confirm("現在の対局を置き換えて、新しい対局を始めますか？")) return false;
-  const next = new ShogiGame(setup.position, { passLimit: kind === "standard" ? 0 : setup.passLimit, pieceRules: kind === "standard" ? {} : setup.pieceRules });
+  const next = new ShogiGame(setup.position, { passLimit: kind === "standard" ? 0 : setup.passLimit, pieceRules: kind === "standard" ? {} : setup.pieceRules, ruleScript: kind === "standard" ? "" : setup.ruleScript });
   stopAI(); game = next; gameKind = kind; gameName = kind === "standard" ? "普通の将棋" : setup.name; hasGameSession = true;
-  editor = null; pieceEditor = null; editorBoardScroll = null; selected = null; selectedHandIndex = -1; pending = []; historyOpen = false; resultOpen = false; resultAnimate = false;
+  editor = null; pieceEditor = null; scriptEditor = null; editorBoardScroll = null; selected = null; selectedHandIndex = -1; pending = []; historyOpen = false; resultOpen = false; resultAnimate = false;
   aiPaused = false; setScreen("game"); activateHumanAI(); aiStartPly = 0; persist(); render(); scheduleAI();
   return true;
 }
@@ -250,21 +258,21 @@ function renderWorkshop(): void {
     <section class="workshop-library" aria-labelledby="workshop-library-title"><div class="workshop-library-heading"><div><h2 id="workshop-library-title">${workshopAction === "edit" ? "編集する配置を選ぶ" : "遊ぶ配置を選ぶ"}</h2><p>このブラウザに保存した配置 ${editorSavedSetups.length}件</p></div><button id="workshop-import-setup">ファイルから${workshopAction === "edit" ? "編集する" : "遊ぶ"}</button></div>
     ${editorStorageError ? `<p class="workshop-storage-error" role="alert">${esc(editorStorageError)}</p>` : ""}
     ${editorSavedSetups.length ? `<div class="workshop-setup-grid">${editorSavedSetups.map(entry => {
-      const setup = entry.setup, issues = setupIssues(setup.position, setup.pieceRules);
-      return `<article class="workshop-setup-card">${setupPreview(setup.position, setup.pieceRules)}<div class="workshop-setup-body"><span class="setup-ready ${issues.length ? "is-draft" : ""}">${issues.length ? "作成途中" : "対局できます"}</span><h3>${esc(setup.name)}</h3><p>${setup.position.width}×${setup.position.height}盤・${SIDE_NAMES[setup.position.turn]}から</p><p>パス：${setup.passLimit === null ? "無制限" : setup.passLimit === 0 ? "なし" : `各自${setup.passLimit}回`}</p>${setup.pieceRules ? `<p>駒の動き：編集済み</p>` : ""}${issues.length ? `<p class="setup-issue">${esc(issues[0])}</p>` : ""}<div class="workshop-setup-buttons">${workshopAction === "edit" ? `<button data-workshop-edit="${esc(entry.id)}">編集する →</button>` : `<button data-workshop-play="${esc(entry.id)}" ${issues.length ? "disabled" : ""}>この配置で遊ぶ →</button><button class="text-button" data-workshop-edit="${esc(entry.id)}">編集</button>`}<button class="text-button" data-workshop-copy="${esc(entry.id)}">コピーして作成</button><button class="text-button" data-workshop-delete="${esc(entry.id)}" aria-label="${esc(setup.name)}を削除">削除</button></div></div></article>`;
+      const setup = entry.setup, issues = setupIssues(setup.position, setup.pieceRules, setup.ruleScript);
+      return `<article class="workshop-setup-card">${setupPreview(setup.position, setup.pieceRules)}<div class="workshop-setup-body"><span class="setup-ready ${issues.length ? "is-draft" : ""}">${issues.length ? "作成途中" : "対局できます"}</span><h3>${esc(setup.name)}</h3><p>${setup.position.width}×${setup.position.height}盤・${SIDE_NAMES[setup.position.turn]}から</p><p>パス：${setup.passLimit === null ? "無制限" : setup.passLimit === 0 ? "なし" : `各自${setup.passLimit}回`}</p>${setup.pieceRules ? `<p>駒の設定：編集済み</p>` : ""}${setup.ruleScript ? `<p>盤面ルール：設定あり</p>` : ""}${issues.length ? `<p class="setup-issue">${esc(issues[0])}</p>` : ""}<div class="workshop-setup-buttons">${workshopAction === "edit" ? `<button data-workshop-edit="${esc(entry.id)}">編集する →</button>` : `<button data-workshop-play="${esc(entry.id)}" ${issues.length ? "disabled" : ""}>この配置で遊ぶ →</button><button class="text-button" data-workshop-edit="${esc(entry.id)}">編集</button>`}<button class="text-button" data-workshop-copy="${esc(entry.id)}">コピーして作成</button><button class="text-button" data-workshop-delete="${esc(entry.id)}" aria-label="${esc(setup.name)}を削除">削除</button></div></div></article>`;
     }).join("")}</div>` : `<div class="workshop-empty"><span aria-hidden="true">盤</span><h3>まだ配置が保存されていません</h3><p>「新規」から配置をつくるか、配置ファイルを開いてください。</p><button id="workshop-create-empty" class="menu-primary">新しい配置をつくる</button></div>`}</section><input id="workshop-file-input" type="file" accept=".json,application/json" hidden></main>`;
 }
 function openEditor(setup?: SavedSetup, returnTo: "game" | "workshop" = "game", loadedId: string | null = null): void {
   stopAI(); selected = null; selectedHandIndex = -1; pending = []; historyOpen = false;
-  editor = new BoardEditor(setup?.position ?? game.initialPosition, setup ? setup.pieceRules : game.pieceRules); editorSquare = -1; editorReturn = returnTo; setScreen("game");
+  editor = new BoardEditor(setup?.position ?? game.initialPosition, setup ? setup.pieceRules : game.pieceRules, setup ? setup.ruleScript : game.ruleScript); editorSquare = -1; editorReturn = returnTo; setScreen("game");
   editorSetupName = setup?.name ?? ""; editorPassLimitText = (setup ? setup.passLimit : game.passLimit)?.toString() ?? ""; editorPassLimitBadInput = false; editorLoadedSetupId = loadedId;
   editorSaveAsOpen = false; editorSaveAsName = "";
-  pieceEditor = null; editorBoardScroll = null;
+  pieceEditor = null; scriptEditor = null; editorBoardScroll = null;
   refreshSavedSetups();
   render(); $("#editor-width").focus();
 }
 function closeEditor(): void {
-  editor = null; pieceEditor = null; editorBoardScroll = null; editorSaveAsOpen = false;
+  editor = null; pieceEditor = null; scriptEditor = null; editorBoardScroll = null; editorSaveAsOpen = false;
   if (editorReturn === "workshop") { openWorkshop(workshopAction); return; }
   activateHumanAI(); render(); scheduleAI(); $("#edit-board").focus();
 }
@@ -278,11 +286,11 @@ function refreshSavedSetups(): void {
 function editorSetup(name = editorSetupName): SavedSetup {
   if (!editor) throw new Error("盤面エディターを開いてください");
   if (editorPassLimitBadInput) throw new Error("パス上限は0以上の整数、または無制限にしてください");
-  return createSetup(editor.position, editorPassLimitText.trim() === "" ? null : Number(editorPassLimitText), name, editor.pieceRules);
+  return createSetup(editor.position, editorPassLimitText.trim() === "" ? null : Number(editorPassLimitText), name, editor.pieceRules, editor.ruleScript);
 }
 function useEditorSetup(setup: SavedSetup): void {
   if (!editor) return;
-  editor.reset(setup.position, setup.pieceRules ?? {}); editorSquare = -1; editorSetupName = setup.name;
+  editor.reset(setup.position, setup.pieceRules ?? {}, setup.ruleScript ?? ""); editorSquare = -1; editorSetupName = setup.name;
   editorPassLimitText = setup.passLimit?.toString() ?? ""; editorPassLimitBadInput = false; editorLoadedSetupId = null;
   editorSaveAsOpen = false; editorSaveAsName = "";
   render();
@@ -315,9 +323,9 @@ async function importEditorSetup(input: HTMLInputElement): Promise<void> {
   const current = editor, version = screenVersion, file = input.files?.[0];
   if (!current || !file) return;
   try {
-    const text = await file.text(); if (editor !== current || screenVersion !== version || pieceEditor) return;
+    const text = await file.text(); if (editor !== current || screenVersion !== version || pieceEditor || scriptEditor) return;
     useEditorSetup(loadSetup(JSON.parse(text))); notify("配置ファイルを読み込みました");
-  } catch (error) { if (editor === current && screenVersion === version && !pieceEditor) notify(`配置を読み込めません：${(error as Error).message}`); }
+  } catch (error) { if (editor === current && screenVersion === version && !pieceEditor && !scriptEditor) notify(`配置を読み込めません：${(error as Error).message}`); }
   finally { input.value = ""; }
 }
 function saveAsHTML(): string {
@@ -354,12 +362,56 @@ function renderPieceEditorScreen(): void {
 }
 function handlePieceEditorClick(button: HTMLButtonElement): void {
   if (!pieceEditor) return;
+  if (button.id === "piece-editor-open-script" && editor) {
+    const piece = pieceEditor.view.piece, rules = pieceEditor.pieceRules;
+    scriptEditor = new ScriptEditor(rules[piece]?.script ?? "", editor.position, rules, { piece, boardScript: editor.ruleScript });
+    setScreen("game"); render(); $("#rule-script-source").focus(); return;
+  }
   if (button.id === "piece-editor-back" || button.id === "piece-editor-cancel") { closePieceSettings(button.id === "piece-editor-back"); return; }
   const update = pieceEditor.handleClick(button);
   if (update?.render) { render(); if (update.focus) $(update.focus)?.focus(); }
 }
+function isPieceTextInput(input: HTMLInputElement): boolean { return input.id === "piece-name" || input.dataset?.designField === "text"; }
+function updatePieceText(input: HTMLInputElement, reportError = false): void {
+  if (!pieceEditor) return;
+  try {
+    pieceEditor.handleChange(input);
+    const view = pieceEditor.view, name = pieceTypeLabel(view.piece, view.rules);
+    // Keep the input node and focus intact so the IME can compose the next character.
+    const title = $("#piece-editor-title"); if (title) title.textContent = `${name}${view.promoted ? "（成り後）" : ""}の設定`;
+    const label = $(`[data-rule-piece="${view.piece}"] strong`); if (label) label.textContent = name;
+    const state = $(`[data-rule-piece="${view.piece}"] small`); if (state) state.textContent = view.rules[view.piece] ? "設定あり" : "標準";
+    const status = $(".piece-editor-draft-status"); if (status) status.textContent = view.changed ? "反映前の変更があります" : "変更はありません";
+    const undo = $("#piece-editor-undo") as HTMLButtonElement | null; if (undo) undo.disabled = !view.canUndo;
+    const side = input.dataset?.designSide;
+    if (side === "sente" || side === "gote") {
+      const preview = $(`[data-design-preview="${side}"]`);
+      if (preview) preview.innerHTML = renderPiece({ type: view.piece, side, promoted: view.promoted }, view.rules, { inverted: side === "gote" });
+    }
+  } catch (error) { if (reportError) notify((error as Error).message); }
+}
+function closeScriptEditor(apply: boolean): void {
+  if (!editor || !scriptEditor) return;
+  const pieceScope = scriptEditor.scope;
+  if (apply) {
+    if (!scriptEditor.verify()) { render(); $("#script-editor-status").focus(); return; }
+    if (pieceScope && pieceEditor) pieceEditor.setPieceScript(scriptEditor.source);
+    else editor.setRuleScript(scriptEditor.source);
+  }
+  scriptEditor = null; setScreen("game"); render(); $(pieceScope ? "#piece-editor-open-script" : "#editor-open-script").focus();
+}
+function handleScriptEditorClick(button: HTMLButtonElement): void {
+  if (!scriptEditor) return;
+  if (button.id === "script-editor-back" || button.id === "script-editor-cancel") { closeScriptEditor(button.id === "script-editor-back"); return; }
+  if (button.id === "script-editor-verify") scriptEditor.verify();
+  else if (button.id === "script-editor-disable") scriptEditor.setSource("");
+  else if (button.dataset.scriptExample) scriptEditor.useExample(button.dataset.scriptExample);
+  else return;
+  render(); $(button.id === "script-editor-verify" ? "#script-editor-status" : "#rule-script-source").focus();
+}
 function handleEditorClick(button: HTMLButtonElement): void {
   if (!editor) return;
+  if (button.id === "editor-open-script") { scriptEditor = new ScriptEditor(editor.ruleScript, editor.position, editor.pieceRules); setScreen("game"); render(); $("#rule-script-source").focus(); return; }
   if (button.id === "editor-open-piece-settings") { openPieceSettings(); return; }
   if (button.dataset.editorSquare !== undefined) {
     const index = Number(button.dataset.editorSquare);
@@ -385,8 +437,8 @@ function handleEditorClick(button: HTMLButtonElement): void {
     case "editor-import-setup": $("#setup-file-input").click(); return;
     case "editor-undo": editor.undo(); editorSquare = -1; break;
     case "editor-clear": editor.clear(); editorSquare = -1; break;
-    case "editor-standard": editor.reset(initialPosition(), {}); editorSquare = -1; break;
-    case "editor-current": editor.reset(game.position, game.pieceRules); editorSquare = -1; break;
+    case "editor-standard": editor.reset(initialPosition(), {}, ""); editorSquare = -1; break;
+    case "editor-current": editor.reset(game.position, game.pieceRules, game.ruleScript); editorSquare = -1; break;
     case "editor-flip": flipped = !flipped; editorSquare = -1; break;
     case "editor-apply": {
       if (editor.issues.length) throw new Error(editor.issues[0]);
@@ -420,12 +472,30 @@ function renderEditor(): void {
     <p class="editor-board-help">王・玉を置き直すと、同じ側の王・玉が移動します。消しゴムで駒を取り除けます。</p></section>
     <aside class="editor-panel">${setupStorageHTML()}<section class="editor-section"><h2>盤面の大きさ</h2><div class="editor-size-fields"><label>横のマス数<select id="editor-width">${sizes(position.width)}</select></label><span>×</span><label>縦のマス数<select id="editor-height">${sizes(position.height)}</select></label></div><p>縦・横それぞれ${MIN_BOARD_SIZE}〜${MAX_BOARD_SIZE}マス。縮小すると盤外の駒を取り除きます。</p></section>
     <section class="editor-section"><h2>置く駒</h2><div class="editor-side-buttons">${(["sente", "gote"] as Side[]).map(side => `<button data-editor-side="${side}" aria-pressed="${editorSide === side}">${side === "sente" ? "▲" : "△"} ${SIDE_NAMES[side]}</button>`).join("")}</div><div class="editor-palette">${pieceTypes(rules).map(type => `<button data-editor-piece="${type}" aria-pressed="${editorPiece === type}" aria-label="${esc(pieceTypeLabel(type, rules))}">${pieceHTML({ type, side: editorSide, promoted: editorPromoted && canPromote(type, rules) }, rules)}</button>`).join("")}</div><div class="editor-brush-options"><label><input id="editor-promoted" type="checkbox" ${editorPromoted ? "checked" : ""} ${editorPiece === "erase" || !canPromote(editorPiece, rules) ? "disabled" : ""}> 成った駒を置く</label><button data-editor-piece="erase" aria-pressed="${editorPiece === "erase"}">消しゴム</button></div></section>
-    <section class="editor-section editor-piece-settings"><h2>駒の設定</h2><p>${Object.keys(editor.pieceRules).length ? `${Object.keys(editor.pieceRules).length}種類の動きを設定済みです。` : "標準の動きを使用しています。"}移動・駒取りは専用画面で設定します。</p><button id="editor-open-piece-settings">駒の設定画面を開く →</button></section><section class="editor-section"><h2>対局の開始設定</h2><label class="editor-turn-label">最初の手番<select id="editor-turn"><option value="sente" ${position.turn === "sente" ? "selected" : ""}>先手</option><option value="gote" ${position.turn === "gote" ? "selected" : ""}>後手</option></select></label><label class="editor-pass-limit">パス上限（各自）<input id="editor-pass-limit" type="number" min="0" step="1" value="${esc(editorPassLimitText)}" placeholder="無制限"></label><p>パス上限は空欄で無制限、0で使用不可です。</p><p>成れる範囲：相手側の端から${promotionDepth(position.height)}段</p><p>持ち駒：${esc(handSummary)}</p><div class="editor-validation ${issues.length ? "has-issues" : ""}" role="status">${issues.length ? `<ul>${issues.map(issue => `<li>${esc(issue)}</li>`).join("")}</ul>` : "この配置で対局できます"}</div></section>
-    <section class="editor-section editor-tools"><button id="editor-undo" ${editor.canUndo ? "" : "disabled"}>↶ 編集を一つ戻す</button><button id="editor-current">現在の対局の盤面を使う</button><button id="editor-clear">盤面を空にする</button><button id="editor-standard">平手に戻す（9×9）</button><p>「この配置で対局」で棋譜をリセットし、編集した配置から開始します。設定は棋譜の保存にも含まれます。</p></section></aside></div></main><input id="setup-file-input" type="file" accept=".json,application/json" hidden>`;
+    <section class="editor-section editor-piece-settings"><h2>駒の設定</h2><p>${Object.keys(editor.pieceRules).length ? `${Object.keys(editor.pieceRules).length}種類の駒を設定済みです。` : "標準の動きを使用しています。"}移動・駒取りは専用画面で設定します。</p><button id="editor-open-piece-settings">駒の設定画面を開く →</button></section><section class="editor-section"><h2>対局の開始設定</h2><label class="editor-turn-label">最初の手番<select id="editor-turn"><option value="sente" ${position.turn === "sente" ? "selected" : ""}>先手</option><option value="gote" ${position.turn === "gote" ? "selected" : ""}>後手</option></select></label><label class="editor-pass-limit">パス上限（各自）<input id="editor-pass-limit" type="number" min="0" step="1" value="${esc(editorPassLimitText)}" placeholder="無制限"></label><p>パス上限は空欄で無制限、0で使用不可です。</p><p>成れる範囲：相手側の端から${promotionDepth(position.height)}段</p><p>持ち駒：${esc(handSummary)}</p><div class="editor-validation ${issues.length ? "has-issues" : ""}" role="status">${issues.length ? `<ul>${issues.map(issue => `<li>${esc(issue)}</li>`).join("")}</ul>` : "この配置で対局できます"}</div></section>
+    <section class="editor-section editor-piece-settings"><h2>盤面のルールコード</h2><p>${editor.ruleScript ? "JavaScriptの追加ルールを設定済みです。" : "勝利・敗北条件や盤面全体の効果をプログラムできます。"}</p><button id="editor-open-script">盤面のルールコードを編集 →</button></section><section class="editor-section editor-tools"><button id="editor-undo" ${editor.canUndo ? "" : "disabled"}>↶ 編集を一つ戻す</button><button id="editor-current">現在の対局の盤面を使う</button><button id="editor-clear">盤面を空にする</button><button id="editor-standard">平手に戻す（9×9）</button><p>「この配置で対局」で棋譜をリセットし、編集した配置から開始します。設定は棋譜の保存にも含まれます。</p></section></aside></div></main><input id="setup-file-input" type="file" accept=".json,application/json" hidden>`;
   for (const [selector, scrollTop] of scrollPositions) { const container = $(selector); if (container) container.scrollTop = scrollTop; }
 }
-function promotionDialog() {
-  const p = game.position.board[pending[0].from!]!;
+function pendingRuleChoice() {
+  const first = pending[0];
+  let index = 0;
+  while (first.choices?.[index] !== undefined && pending.every(move => move.choices?.[index] === first.choices![index])) index++;
+  return ruleChoiceForMove(game.position, { ...first, choices: first.choices?.slice(0, index) ?? [] }, game.pieceRules, game.ruleScript);
+}
+function selectPending(moves: GameMove[]): void {
+  if (!moves.length) throw new Error("指せる手がありません");
+  if (moves.length === 1) { execute(moves[0]); return; }
+  pending = moves; render(); $(".promotion-dialog button").focus();
+}
+function promotionDialog(): string {
+  const move = pending[0];
+  if (isPassMove(move) || !pending.some(candidate => !isPassMove(candidate) && candidate.promote !== move.promote)) {
+    const choice = pendingRuleChoice();
+    if (!choice) throw new Error("ルールの選択肢が見つかりません");
+    const options = choice.options.filter(option => pending.some(candidate => candidate.choices?.[choice.index] === option.value));
+    return `<div class="modal-backdrop"><section class="promotion-dialog rule-choice-dialog" role="dialog" aria-modal="true" aria-labelledby="promotion-title"><span class="eyebrow">RULE CHOICE</span><h2 id="promotion-title">${esc(choice.title)}</h2><p>追加ルールの効果を選んでください。</p><div class="rule-choice-options">${options.map(option => `<button data-rule-choice="${esc(option.value)}">${pieceTypes(game.pieceRules).includes(option.value as PieceType) ? pieceHTML({ type: option.value as PieceType, side: game.position.turn, promoted: false }) : ""}<strong>${esc(option.label)}</strong></button>`).join("")}</div><button id="cancel-promotion" class="text-button">戻る</button></section></div>`;
+  }
+  const p = game.position.board[move.from!]!;
   return `<div class="modal-backdrop"><section class="promotion-dialog" role="dialog" aria-modal="true" aria-labelledby="promotion-title"><span class="eyebrow">PROMOTION</span><h2 id="promotion-title">${esc(pieceName(p, game.pieceRules))}を成りますか？</h2><p>成ると、駒の動きが変わります。</p><div class="promotion-options"><button data-promote="yes">${pieceHTML({ ...p, promoted: true })}<strong>成る</strong></button><button data-promote="no">${pieceHTML(p)}<strong>成らない</strong></button></div><button id="cancel-promotion" class="text-button">戻る</button></section></div>`;
 }
 // Latch stop on press so a render between pointerdown and click cannot lose it.
@@ -439,16 +509,16 @@ document.addEventListener("click", e => {
   try {
     if (!editor && screen !== "game") { handleMenuClick(b); return; }
     if (resultOpen && !["result-close", "result-view-board", "result-restart", "result-export", "result-home"].includes(b.id)) return;
-    if (pending.length && !b.dataset.promote && b.id !== "cancel-promotion") return;
-    if (editor) { if (pieceEditor) handlePieceEditorClick(b); else handleEditorClick(b); return; }
+    if (pending.length && !b.dataset.promote && b.dataset.ruleChoice === undefined && b.id !== "cancel-promotion") return;
+    if (editor) { if (scriptEditor) handleScriptEditorClick(b); else if (pieceEditor) handlePieceEditorClick(b); else handleEditorClick(b); return; }
     if (b.dataset.square !== undefined) {
       if (pending.length || game.result) return;
       if (aiBusy || (aiRunning && isAITurn())) { notify("AI の手番です。操作する場合は停止を押してください。"); return; }
       const to = Number(b.dataset.square), position = game.position, p = position.board[to];
       if (selected !== null) {
-        const moves = legalMoves(position, game.pieceRules).filter(m => m.to === to && (typeof selected === "number" ? m.from === selected : m.drop === selected));
+        const moves = legalMoves(position, game.pieceRules, game.ruleScript).filter(m => m.to === to && (typeof selected === "number" ? m.from === selected : m.drop === selected));
         if (moves.length === 1) return execute(moves[0]);
-        if (moves.length > 1) { pending = moves; render(); $("[data-promote='yes']").focus(); return; }
+        if (moves.length > 1) { selectPending(moves); return; }
       }
       if (p?.side === position.turn) selected = selected === to ? null : to;
       else { selected = null; if (p) notify("手番の駒を選んでください"); }
@@ -459,7 +529,8 @@ document.addEventListener("click", e => {
       const index = Number(b.dataset.handIndex ?? 0), samePiece = selected === b.dataset.hand && selectedHandIndex === index;
       selected = samePiece ? null : b.dataset.hand as HandType; selectedHandIndex = samePiece ? -1 : index; render();
     }
-    else if (b.dataset.promote) { const move = pending.find(m => m.promote === (b.dataset.promote === "yes")); if (move) execute(move); }
+    else if (b.dataset.promote) selectPending(pending.filter(move => !isPassMove(move) && move.promote === (b.dataset.promote === "yes")));
+    else if (b.dataset.ruleChoice !== undefined) { const choice = pendingRuleChoice(); if (choice) selectPending(pending.filter(move => move.choices?.[choice.index] === b.dataset.ruleChoice)); }
     else switch (b.id) {
       case "cancel-promotion": pending = []; render(); break;
       case "undo": undoMove(); break;
@@ -470,7 +541,7 @@ document.addEventListener("click", e => {
       case "edit-board": if (gameKind === "custom") openEditor(); else openWorkshop("edit"); break;
       case "pass":
         if (aiBusy || (aiRunning && isAITurn())) { notify("AI の手番です。操作する場合は停止を押してください。"); break; }
-        execute({ pass: true }); break;
+        { const moves = game.passMoves; if (moves.length) selectPending(moves); else game.pass(); } break;
       case "ai-step": stopAI(); activateHumanAI(); requestAIMove(); break;
       case "ai-toggle":
         // The original stop button may receive its click after the AI has stopped.
@@ -490,7 +561,17 @@ document.addEventListener("click", e => {
 });
 document.addEventListener("keydown", e => {
   const key = e as KeyboardEvent;
+  if (key.isComposing || key.keyCode === 229 || composingField) return;
   if (editor) {
+    if (scriptEditor) {
+      if (key.key === "Escape") { key.preventDefault(); closeScriptEditor(false); }
+      else if ((key.ctrlKey || key.metaKey) && key.key === "Enter") { key.preventDefault(); scriptEditor.verify(); render(); }
+      else if (key.key === "Tab" && (key.target as HTMLElement | null)?.id === "rule-script-source") {
+        key.preventDefault(); const field = key.target as HTMLTextAreaElement;
+        field.setRangeText("  ", field.selectionStart, field.selectionEnd, "end"); scriptEditor.setSource(field.value);
+      }
+      return;
+    }
     if (pieceEditor) { if (key.key === "Escape") { key.preventDefault(); closePieceSettings(true); } return; }
     if (key.key === "Escape") { key.preventDefault(); if (editorSaveAsOpen) closeSaveAs(); else closeEditor(); }
     else if (editorSaveAsOpen && key.key === "Enter" && (key.target as HTMLElement | null)?.id === "editor-save-as-name") {
@@ -516,16 +597,18 @@ document.addEventListener("keydown", e => {
     key.preventDefault(); buttons[(index + (key.shiftKey ? -1 : 1) + buttons.length) % buttons.length]?.focus();
   }
 });
+document.addEventListener("compositionstart", e => { composingField = e.target; });
+document.addEventListener("compositionend", e => {
+  composingField = null;
+  const input = e.target as HTMLInputElement;
+  if (editor && pieceEditor && !scriptEditor && isPieceTextInput(input)) updatePieceText(input);
+});
 document.addEventListener("input", e => {
   if (!editor) return;
   const input = e.target as HTMLInputElement;
+  if (scriptEditor) { if (input.id === "rule-script-source") { scriptEditor.setSource(input.value); $("#script-editor-status").textContent = scriptEditor.status; $("#script-editor-status").classList.remove("has-error"); } return; }
   if (pieceEditor) {
-    if (input.id === "piece-name" || input.dataset?.designField === "text") {
-      try {
-        const start = input.selectionStart, end = input.selectionEnd, update = pieceEditor.handleChange(input);
-        if (update?.render) { render(); if (update.focus) { const field = $(update.focus) as HTMLInputElement; field?.focus(); if (start !== null && end !== null) field?.setSelectionRange?.(start, end); } }
-      } catch { /* Let partially typed text remain until the user commits the field. */ }
-    }
+    if (isPieceTextInput(input) && !(e as InputEvent).isComposing && composingField !== input) updatePieceText(input);
     return;
   }
   if (input.id === "editor-setup-name") editorSetupName = input.value;
@@ -535,7 +618,9 @@ document.addEventListener("input", e => {
 document.addEventListener("change", async e => {
   const input = e.target as HTMLInputElement;
   if (editor) {
+    if (scriptEditor) { if (input.id === "rule-script-source") scriptEditor.setSource(input.value); return; }
     if (pieceEditor) {
+      if (isPieceTextInput(input)) { if (composingField !== input && !(e as InputEvent).isComposing) updatePieceText(input, true); return; }
       try { const update = pieceEditor.handleChange(input); if (update?.render) { render(); if (update.focus) $(update.focus)?.focus(); } }
       catch (error) { notify((error as Error).message); }
       return;

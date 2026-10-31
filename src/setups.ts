@@ -1,30 +1,33 @@
 import { validatePassLimit, validatePosition } from "./shogi";
 import type { Position } from "./shogi";
-import { loadPieceRules, hasPieceLibrary } from "./pieces";
+import { loadPieceRules, hasPieceLibrary, hasPieceScripts } from "./pieces";
 import type { PieceRules } from "./pieces";
+import { loadRuleScript, validateRuleScript } from "./rulescript";
 
 export const SETUP_STORAGE_KEY = "shogi-setups.v1";
 export const MAX_SETUP_NAME_LENGTH = 80;
 export const MAX_LOCAL_SETUPS = 100;
-export interface SavedSetup { kind: "shogi-setup"; version: 1 | 2 | 3; name: string; position: Position; passLimit: number | null; pieceRules?: PieceRules }
+export interface SavedSetup { kind: "shogi-setup"; version: 1 | 2 | 3 | 4 | 5; name: string; position: Position; passLimit: number | null; pieceRules?: PieceRules; ruleScript?: string }
 export interface LocalSetup { id: string; updatedAt: string; setup: SavedSetup }
 type SetupStorage = Pick<Storage, "getItem" | "setItem">;
 
-export function createSetup(position: Position, passLimit: number | null, name = "", pieceRules?: PieceRules): SavedSetup {
+export function createSetup(position: Position, passLimit: number | null, name = "", pieceRules?: PieceRules, script?: string): SavedSetup {
   const rules = loadPieceRules(pieceRules), custom = Object.keys(rules).length > 0;
+  const ruleScript = loadRuleScript(script); validateRuleScript(ruleScript, rules);
   validatePosition(position, rules); validatePassLimit(passLimit);
   const title = name.trim() || `${position.width}×${position.height}の配置`;
   if (title.length > MAX_SETUP_NAME_LENGTH) throw new Error(`配置名は${MAX_SETUP_NAME_LENGTH}文字以内にしてください`);
-  return { kind: "shogi-setup", version: hasPieceLibrary(rules) ? 3 : custom ? 2 : 1, name: title, position: structuredClone(position), passLimit, ...(custom ? { pieceRules: rules } : {}) };
+  return { kind: "shogi-setup", version: hasPieceScripts(rules) ? 5 : ruleScript ? 4 : hasPieceLibrary(rules) ? 3 : custom ? 2 : 1, name: title, position: structuredClone(position), passLimit, ...(custom || ruleScript ? { pieceRules: rules } : {}), ...(ruleScript ? { ruleScript } : {}) };
 }
 
 export function loadSetup(data: unknown): SavedSetup {
   if (!data || typeof data !== "object") throw new Error("配置のJSONファイルではありません");
   const setup = data as SavedSetup;
-  if (setup.kind !== "shogi-setup" || ![1, 2, 3].includes(setup.version) || typeof setup.name !== "string") throw new Error("対応していない配置データです。配置のJSONファイルを選んでください");
+  if (setup.kind !== "shogi-setup" || ![1, 2, 3, 4, 5].includes(setup.version) || typeof setup.name !== "string" || (setup.version < 4 && setup.ruleScript !== undefined) || (setup.version === 4 && !setup.ruleScript)) throw new Error("対応していない配置データです。配置のJSONファイルを選んでください");
   if ((setup.version >= 2 && setup.pieceRules === undefined) || (setup.version === 1 && setup.pieceRules !== undefined)) throw new Error("駒の動きの保存形式が壊れています");
+  if (setup.version < 5 && hasPieceScripts(loadPieceRules(setup.pieceRules))) throw new Error("駒のルールコードの保存形式が壊れています");
   if (setup.version < 3 && hasPieceLibrary(loadPieceRules(setup.pieceRules))) throw new Error("追加駒・デザインの保存形式が壊れています");
-  return createSetup(setup.position, setup.passLimit, setup.name, setup.pieceRules);
+  return createSetup(setup.position, setup.passLimit, setup.name, setup.pieceRules, setup.ruleScript);
 }
 
 export function availableSetupName(name: string, existingNames: readonly string[]): string {
@@ -39,7 +42,7 @@ export function availableSetupName(name: string, existingNames: readonly string[
 
 export function copySetup(data: SavedSetup, existingNames: readonly string[] = []): SavedSetup {
   const source = loadSetup(data);
-  return createSetup(source.position, source.passLimit, availableSetupName(source.name, [...existingNames, source.name]), source.pieceRules);
+  return createSetup(source.position, source.passLimit, availableSetupName(source.name, [...existingNames, source.name]), source.pieceRules, source.ruleScript);
 }
 
 export function readLocalSetups(storage: SetupStorage): LocalSetup[] {

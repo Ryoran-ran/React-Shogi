@@ -184,13 +184,43 @@ test("piece editing flows through undo, setup copies, files, custom games, AI an
     await click("editor-open-piece-settings"); await click("", { rulePiece: "P" }); await click("", { rulePromoted: "false" });
     await click("", { pieceSection: "design" });
     expect(html()).toContain("先手のデザイン"); expect(html()).toContain("後手のデザイン"); expect(html()).not.toContain("data-rule-offset");
+    const frontInput = { id: "", value: "", dataset: { designSide: "sente", designField: "text" }, selectionStart: 0, selectionEnd: 0 };
+    const beforeComposition = html(), oldPreview = element('[data-design-preview="sente"]').innerHTML;
+    listeners.compositionstart({ target: frontInput });
+    for (const value of ["n", "ね", "ねk", "ねこ"]) { frontInput.value = value; listeners.input({ target: frontInput, isComposing: true }); }
+    await listeners.change({ target: frontInput });
+    let interceptedIMEKey = false;
+    await listeners.keydown({ key: "Escape", isComposing: true, preventDefault() { interceptedIMEKey = true; } });
+    expect(interceptedIMEKey).toBe(false); expect(html()).toBe(beforeComposition); expect(element('[data-design-preview="sente"]').innerHTML).toBe(oldPreview);
+    frontInput.value = "猫"; listeners.compositionend({ target: frontInput });
+    listeners.input({ target: frontInput, isComposing: false });
+    expect(html()).toBe(beforeComposition); expect(element('[data-design-preview="sente"]').innerHTML).toContain("猫"); expect(element("#piece-editor-undo").disabled).toBe(false);
+    await click("piece-editor-undo"); expect(html()).toContain('value="歩兵"'); expect(html()).not.toContain('value="ねk"');
+    const beforeUntrackedIME = html();
+    listeners.input({ target: { ...frontInput, value: "k" }, isComposing: true });
+    expect(html()).toBe(beforeUntrackedIME);
+    await listeners.keydown({ key: "Escape", keyCode: 229, preventDefault() { interceptedIMEKey = true; } });
+    expect(interceptedIMEKey).toBe(false); expect(html()).toBe(beforeUntrackedIME);
     input("", "猫", { designSide: "sente", designField: "text" });
     await change("", "#ccdd88", { designSide: "sente", designField: "fill" });
     await change("", "circle", { designSide: "sente", designField: "shape" });
-    input("", "虎", { designSide: "gote", designField: "text" });
+    const backInput = { id: "", value: "", dataset: { designSide: "gote", designField: "text" } }, beforeHangul = html();
+    listeners.compositionstart({ target: backInput });
+    // Some IMEs do not set InputEvent.isComposing consistently; composition events must also protect the field.
+    for (const value of ["ㅎ", "하", "한"]) { backInput.value = value; listeners.input({ target: backInput }); }
+    expect(html()).toBe(beforeHangul);
+    listeners.compositionend({ target: backInput });
+    await listeners.change({ target: backInput });
+    expect(html()).toBe(beforeHangul); expect(element('[data-design-preview="gote"]').innerHTML).toContain("한");
     await change("", "square", { designSide: "gote", designField: "shape" });
-    await click("piece-editor-add"); input("piece-name", "砲&玉");
-    expect(html()).toContain("砲&amp;玉の設定"); expect(html()).toContain('data-rule-piece="custom_1" aria-pressed="true"');
+    await click("piece-editor-add");
+    const nameInput = { id: "piece-name", value: "sh", dataset: {} }, beforeName = html();
+    listeners.compositionstart({ target: nameInput }); listeners.input({ target: nameInput, isComposing: false });
+    await listeners.keydown({ key: "Escape", preventDefault() { interceptedIMEKey = true; } });
+    expect(interceptedIMEKey).toBe(false); expect(html()).toBe(beforeName);
+    nameInput.value = "新駒"; listeners.compositionend({ target: nameInput }); expect(element("#piece-editor-title").textContent).toBe("新駒の設定"); expect(html()).toBe(beforeName);
+    input("piece-name", "砲&玉");
+    expect(element("#piece-editor-title").textContent).toBe("砲&玉の設定"); expect(html()).toContain('data-rule-piece="custom_1" aria-pressed="true"');
     input("", "砲", { designSide: "sente", designField: "text" });
     await change("", "#d0eeaa", { designSide: "sente", designField: "fill" });
     await change("", "#123456", { designSide: "sente", designField: "color" });
@@ -213,6 +243,7 @@ test("piece editing flows through undo, setup copies, files, custom games, AI an
     await click("editor-save-local");
     const librarySetup = readLocalSetups(storage).find(entry => entry.id === savedSetup.id)!.setup;
     expect(librarySetup.version).toBe(3); expect(librarySetup.pieceRules?.custom_1?.definition?.name).toBe("砲&玉");
+    expect(librarySetup.pieceRules?.P?.design?.normal?.sente?.text).toBe("猫"); expect(librarySetup.pieceRules?.P?.design?.normal?.gote?.text).toBe("한");
     expect(librarySetup.pieceRules?.custom_1?.design?.normal?.sente?.text).toBe("砲");
     expect(librarySetup.pieceRules?.custom_1?.design?.normal?.gote?.text).toBe("炮");
     expect(readLocalSetups(storage).find(entry => entry.id !== savedSetup.id)?.setup.pieceRules?.custom_1).toBeUndefined();
