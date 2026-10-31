@@ -41,12 +41,12 @@ function call(fn: string, a: JsonValue[], ctx: EvalContext): JsonValue {
     }
     case "flipTargets": {
       gridPosition(a[0], ctx); string(a[1]); string(a[2]);
-      const space = ctx.definition.spaces.find(s => s.id === a[0].spaceId)!;
+      const origin = a[0], space = ctx.definition.spaces.find(s => s.id === origin.spaceId)!;
       const targets = new Set<string>();
       for (const dx of [-1, 0, 1]) for (const dy of [-1, 0, 1]) {
         if (dx === 0 && dy === 0) continue;
         const line: string[] = [];
-        for (let x = a[0].x + dx, y = a[0].y + dy; x >= 0 && x < space.width && y >= 0 && y < space.height; x += dx, y += dy) {
+        for (let x = origin.x + dx, y = origin.y + dy; x >= 0 && x < space.width && y >= 0 && y < space.height; x += dx, y += dy) {
           if (space.blocked?.some(p => p.x === x && p.y === y)) break;
           const pieces = gridAt(ctx, space.id, x, y);
           if (pieces.length !== 1 || pieces[0].typeId !== a[2] || pieces[0].ownerId === null) break;

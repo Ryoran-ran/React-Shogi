@@ -1,0 +1,77 @@
+import { expect, test } from "bun:test";
+import { ShogiGame, emptyPosition } from "../src/shogi";
+import { createSetup, saveLocalSetup, readLocalSetups } from "../src/setups";
+import { EDITOR_DRAFT_KEY } from "../src/editordraft";
+import { chooseAIMove } from "../src/ai";
+import type { AIRequest } from "../src/ai";
+
+test("editor test sessions, detailed logs, settings, redo and recovery preserve the real match and nested drafts", async () => {
+  const url=new URL('../web/app.ts',import.meta.url);
+  const source=new Bun.Transpiler({loader:'ts',target:'browser'}).transformSync(await Bun.file(url).text()).replace(/(from\s+["'])(\.{1,2}\/[^"']+)(["'])/g,(_m,a,b,c)=>`${a}${new URL(b,url).href}${c}`).replaceAll('import.meta.url',JSON.stringify(url.href));
+  const originals={document:globalThis.document,localStorage:globalThis.localStorage,confirm:globalThis.confirm,Worker:globalThis.Worker,setTimeout:globalThis.setTimeout,clearTimeout:globalThis.clearTimeout};
+  const originalURLs={createObjectURL:URL.createObjectURL,revokeObjectURL:URL.revokeObjectURL};
+  const values=new Map<string,string>(), elements=new Map<string,any>(),blobs=new Map<string,Blob>(),downloads:Blob[]=[];
+  let listeners:Record<string,(event:any)=>any>={}, session=0,timer=0;
+  const storage={getItem:(key:string)=>values.get(key)??null,setItem:(key:string,value:string)=>{values.set(key,value);},removeItem:(key:string)=>{values.delete(key);}};
+  const main=new ShogiGame(); main.play({from:56,to:47,promote:false}); values.set('shogi-game.v1',JSON.stringify({game:main.save(),gameKind:'standard',aiMode:'human'}));
+  const realMatch=values.get('shogi-game.v1');
+  const p=emptyPosition(); p.board[80]={type:'K',side:'sente',promoted:false};p.board[0]={type:'K',side:'gote',promoted:false};p.board[40]={type:'P',side:'sente',promoted:false};p.board[31]={type:'G',side:'gote',promoted:false};p.board[30]={type:'B',side:'gote',promoted:false};
+  const pieceCode='export default { afterCapture(ctx) { for (const t of ctx.board.neighbors(ctx.self.square)) if (t.piece && t.piece.side !== ctx.self.side) ctx.destroy(t.square); }, afterMove(ctx) { ctx.setPieceData(ctx.self.square,{...ctx.self.data,moves:1}); ctx.log("<piece effect>"); } };';
+  const boardCode='export default { afterMove(ctx) { ctx.state.moves=(ctx.state.moves??0)+1; }, checkResult(ctx) { if (ctx.state.moves >= 2) ctx.draw(); } };';
+  const saved=saveLocalSetup(storage,createSetup(p,0,'作業用',{P:{script:pieceCode}},boardCode));
+  const workers:MockWorker[]=[];
+  class MockWorker { request!:AIRequest;onmessage:((event:any)=>void)|null=null;onerror:((event:any)=>void)|null=null;constructor(){workers.push(this);}postMessage(request:AIRequest){this.request=structuredClone(request);}terminate(){} }
+  const element=(selector:string)=>{if(!elements.has(selector))elements.set(selector,{innerHTML:'',textContent:'',value:'',dataset:{},classList:{add(){},remove(){}},focus(){},click(){},select(){},scrollTop:0,scrollLeft:0});return elements.get(selector);};
+  Object.assign(URL,{createObjectURL:(blob:Blob)=>{const id=`blob:workshop-${blobs.size}`;blobs.set(id,blob);return id;},revokeObjectURL:(id:string)=>{blobs.delete(id);}});
+  Object.assign(globalThis,{document:{querySelector:element,addEventListener:(name:string,fn:any)=>{listeners[name]=fn;},createElement(){const link={href:'',download:'',click(){downloads.push(blobs.get(link.href)!);}};return link;}},localStorage:storage,confirm:()=>true,Worker:MockWorker,setTimeout:()=>++timer,clearTimeout(){}});
+  const click=(id='',dataset={})=>listeners.click({target:{closest:()=>({id,dataset,disabled:false})}});
+  const input=(id:string,value:string)=>listeners.input({target:{id,value,dataset:{}}});
+  const change=(id:string,value='',dataset={},checked?:boolean)=>listeners.change({target:{id,value,dataset,checked}});
+  const html=()=>element('#app').innerHTML as string;
+  const draft=()=>JSON.parse(values.get(EDITOR_DRAFT_KEY)!);
+  const reload=async()=>{elements.clear();listeners={};await import(`data:text/javascript;base64,${Buffer.from(`${source}\n// workshop-session ${++session}`).toString('base64')}`);};
+  try {
+    await reload(); await click('title-workshop'); await click('workshop-edit'); await click('',{workshopEdit:saved.id});
+    expect(html()).toContain('id="editor-test-start"'); expect(draft().snapshot.position.board[40].type).toBe('P');
+    await change('', '', {basicRule:'nifu'},false); await change('editor-promotion-depth','0');
+    expect(draft().snapshot.position.settings.nifu).toBe(false); expect(draft().snapshot.position.settings.promotionDepth).toBe(0);
+    expect(html().indexOf('class="editor-hand-racks"')).toBeLessThan(html().indexOf('class="editor-board-viewport"')); expect(html()).not.toContain('id="editor-hand-side"');
+    await click('',{editorAddHand:'sente'}); expect(draft().snapshot.position.hands.sente.P).toBe(1); expect(draft().snapshot.position.board[40].type).toBe('P');
+    await click('',{editorHandSide:'sente',editorHandType:'P'}); input('editor-hand-count','2'); await click('editor-set-hand'); expect(draft().snapshot.position.hands.sente.P).toBe(2);
+    await click('editor-undo'); expect(draft().snapshot.position.hands.sente.P).toBe(1); await click('editor-redo'); expect(draft().snapshot.position.hands.sente.P).toBe(2);
+    await click('',{editorPiece:'L'}); await change('editor-promoted','',{},true); await click('',{editorAddHand:'gote'}); expect(draft().snapshot.position.hands.gote.L).toBe(1); expect(html()).toContain('後手の香車 1枚・枚数を変更');
+    await click('',{editorHandSide:'gote',editorHandType:'L'});
+    for (const invalid of ['', '-1', '1.5', '226']) { input('editor-hand-count',invalid); await click('editor-set-hand'); expect(draft().snapshot.position.hands.gote.L).toBe(1); expect(html()).toContain('id="editor-hand-count-panel"'); }
+    input('editor-hand-count','225'); listeners.keydown({key:'Enter',target:{id:'editor-hand-count',tagName:'INPUT'},preventDefault(){}}); expect(draft().snapshot.position.hands.gote.L).toBe(225);
+    expect(html()).toContain('data-editor-add-hand="gote" disabled'); await click('',{editorHandSide:'gote',editorHandType:'L'}); input('editor-hand-count','7'); listeners.keydown({key:'Escape',target:{id:'editor-hand-count',tagName:'INPUT'},preventDefault(){}}); expect(draft().snapshot.position.hands.gote.L).toBe(225); expect(html()).not.toContain('id="editor-hand-count-panel"');
+    await click('',{editorHandSide:'gote',editorHandType:'L'}); input('editor-hand-count','0'); await click('editor-set-hand'); expect(draft().snapshot.position.hands.gote.L).toBe(0);
+    await click('',{editorPiece:'K'}); await click('',{editorAddHand:'sente'}); expect(draft().snapshot.position.hands.sente.K).toBeUndefined();
+    await click('',{editorPiece:'P'}); await change('editor-promoted','',{},false);
+    await click('editor-open-piece-settings'); await click('',{rulePiece:'P'}); await change('piece-royal','',{},true);
+    await click('piece-editor-undo'); await click('piece-editor-redo'); expect(draft().pieceDraft.rules.P.royal).toBe(true); await click('piece-editor-undo');
+    input('piece-initial-data','{"hp":3,"uses":2}'); await click('piece-initial-data-apply'); expect(draft().pieceDraft.rules.P.initialData).toEqual({hp:3,uses:2}); expect(draft().snapshot.rules.P.initialData).toBeUndefined();
+    const savedDraft=values.get(EDITOR_DRAFT_KEY); await click('editor-test-start');
+    expect(element('.record-column').innerHTML).toContain('テストと実行ログ'); expect(values.get('shogi-game.v1')).toBe(realMatch);
+    await click('',{square:'40'}); await click('',{square:'31'});
+    expect(element('.record-column').innerHTML).toContain('afterCapture');expect(element('.record-column').innerHTML).toContain('afterMove');expect(element('.record-column').innerHTML).toContain('&lt;piece effect&gt;');
+    expect(values.get(EDITOR_DRAFT_KEY)).toBe(savedDraft);expect(values.get('shogi-game.v1')).toBe(realMatch);
+    await click('editor-test-export'); const log=JSON.parse(await downloads.at(-1)!.text());expect(log.kind).toBe('editor-test-log');expect(log.records[0].trace.some((row:any)=>row.scope==='piece')).toBe(true);expect(log.position.board[31].data.hp).toBe(3);
+    await click('undo'); await click('editor-test-step'); const worker=workers.at(-1)!;expect(worker.request.options.pieceRules?.P?.initialData).toEqual({hp:3,uses:2});
+    worker.onmessage!({data:{id:worker.request.id,result:chooseAIMove(worker.request.position,{...worker.request.options,maxDepth:1,maxTimeMs:5000})}});
+    await click('editor-test-back'); expect(html()).toContain('id="piece-initial-data"'); expect(draft().pieceDraft.rules.P.initialData).toEqual({hp:3,uses:2});expect(values.get('shogi-game.v1')).toBe(realMatch);
+    await click('piece-editor-back'); await click('editor-save-local'); expect(readLocalSetups(storage)[0].setup.version).toBe(6);
+    await click('',{editorTool:'move'});await click('',{editorSquare:'40'});await click('',{editorSquare:'41'});expect(draft().snapshot.position.board[40]).toBeNull();
+    await click('editor-undo');expect(draft().snapshot.position.board[40].type).toBe('P');await click('editor-redo');expect(draft().snapshot.position.board[41].type).toBe('P');await click('editor-undo');
+    await click('',{editorTool:'copy'});await click('',{editorSquare:'40'});await click('',{editorSquare:'40'});await click('',{editorSquare:'42'});expect(draft().snapshot.position.board[42].type).toBe('P');await click('editor-undo');
+    await click('editor-mirror-horizontal');expect(draft().snapshot.position.board[32].type).toBe('B');await click('editor-undo');await click('editor-swap-sides');expect(draft().snapshot.position.turn).toBe('gote');await click('editor-undo');
+    await click('',{editorTool:'select'});await click('',{editorSquare:'40'});input('editor-piece-data','{"hp":9}');await click('editor-set-piece-data');expect(draft().snapshot.position.board[40].data).toEqual({hp:9});
+    await click('editor-open-piece-settings');await click('',{rulePiece:'P'});await click('piece-editor-open-script');input('rule-script-source','export default { afterMove(');
+    expect(draft().codeDraft.source).toBe('export default { afterMove(');await reload();expect(html()).toContain('id="editor-restore-draft"');expect(values.get('shogi-game.v1')).toBe(realMatch);
+    await click('editor-restore-draft');expect(html()).toContain('export default { afterMove(');expect(draft().snapshot.position.board[40].data.hp).toBe(9);expect(draft().snapshot.position.hands.sente.P).toBe(2);
+    await click('script-editor-cancel');await click('piece-editor-back');await click('editor-open-script');
+    const preview='export default { afterMove(ctx) { ctx.state.previewOnly = true; } };'; input('rule-script-source',preview);await click('script-editor-undo');expect(html()).toContain('ctx.state.moves=');await click('script-editor-redo');expect(html()).toContain('ctx.state.previewOnly');
+    await click('editor-test-start');await click('editor-test-export');expect(JSON.parse(await downloads.at(-1)!.text()).game.ruleScript).toBe(preview);await click('editor-test-back');expect(html()).toContain('ctx.state.previewOnly');expect(draft().snapshot.script).toBe(boardCode);
+    await click('script-editor-cancel');expect(values.get('shogi-game.v1')).toBe(realMatch);await click('editor-apply');
+    const real=JSON.parse(values.get('shogi-game.v1')!).game;expect(real.version).toBe(8);expect(real.ruleScript).toBe(boardCode);expect(ShogiGame.load(real).position.board[40]?.data).toEqual({hp:9,uses:2});expect(values.get(EDITOR_DRAFT_KEY)).toBeUndefined();
+  } finally { Object.assign(URL,originalURLs);Object.assign(globalThis,originals); }
+},10000);

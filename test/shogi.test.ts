@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { ShogiGame, attacks, initialPosition, inCheck, legalMoves, positionKey } from "../src/shogi";
+import { ShogiGame, attacks, initialPosition, inCheck, legalMoves, legalActionIterator, positionKey } from "../src/shogi";
 import type { PieceType, Position, Side, Move } from "../src/shogi";
 const at = (x: number, y: number) => y * 9 + x;
 function empty(turn: Side = "sente"): Position { const p = initialPosition(); p.board.fill(null); p.turn = turn; put(p, 8, 8, "K", "sente"); put(p, 0, 0, "K", "gote"); return p; }
@@ -64,6 +64,8 @@ describe("shogi", () => {
     const p = empty(); p.board[0] = null; put(p, 4, 0, "K", "gote"); put(p, 4, 2, "G"); put(p, 3, 2, "R"); put(p, 5, 2, "R"); p.hands.sente.P = 1;
     expect(inCheck(p, "gote")).toBe(false);
     expect(legalMoves(p).some(m => m.drop === "P" && m.to === at(4, 1))).toBe(false);
+    p.hands.gote.G = 1; p.hands.gote.P = 1;
+    expect(legalMoves(p).some(m => m.drop === "P" && m.to === at(4, 1))).toBe(false);
     p.board[at(5, 2)] = null;
     expect(legalMoves(p).some(m => m.drop === "P" && m.to === at(4, 1))).toBe(true);
   });
@@ -100,5 +102,82 @@ describe("shogi", () => {
     const game = new ShogiGame(); game.play(move(2, 6, 2, 5)); game.resign();
     const loaded = ShogiGame.load(game.save()); expect(loaded.result).toEqual(game.result); expect(positionKey(loaded.position)).toBe(positionKey(game.position));
     loaded.undo(); expect(loaded.result).toBeNull(); expect(loaded.moveCount).toBe(1);
+  });
+  test("passing changes only the turn, records a move, and can be undone", () => {
+    const game = new ShogiGame(), before = game.position;
+    expect(game.passLimit).toBeNull(); expect(game.canPass).toBe(true);
+    game.pass();
+    expect(game.position).toEqual({ ...before, turn: "gote" });
+    expect(game.records).toEqual([{ move: { pass: true }, side: "sente", notation: "▲パス", check: false }]);
+    expect(game.moveCount).toBe(1); expect(game.passesRemaining).toEqual({ sente: null, gote: null });
+    expect(game.result).toBeNull();
+    game.undo(); expect(game.position).toEqual(before); expect(game.moveCount).toBe(0);
+  });
+  test("pass limits apply independently to each player and undo refunds a pass", () => {
+    const game = new ShogiGame(undefined, { passLimit: 1 });
+    game.pass(); expect(game.passesRemaining).toEqual({ sente: 0, gote: 1 });
+    game.pass(); expect(game.passesRemaining).toEqual({ sente: 0, gote: 0 });
+    expect(game.canPass).toBe(false);
+    expect(() => game.pass()).toThrow("残り回数"); expect(game.moveCount).toBe(2);
+    game.undo(); expect(game.passesRemaining).toEqual({ sente: 0, gote: 1 });
+    expect(game.canPass).toBe(true); game.pass();
+    const disabled = new ShogiGame(undefined, { passLimit: 0 });
+    expect(disabled.canPass).toBe(false); expect(() => disabled.pass()).toThrow("残り回数");
+    expect(disabled.moveCount).toBe(0);
+  });
+  test("pass limits are validated and can only change before a game starts", () => {
+    const game = new ShogiGame();
+    game.setPassLimit(3); expect(game.passesRemaining).toEqual({ sente: 3, gote: 3 });
+    for (const invalid of [-1, .5, Infinity, NaN, Number.MAX_SAFE_INTEGER + 1]) {
+      expect(() => game.setPassLimit(invalid)).toThrow();
+      expect(() => new ShogiGame(undefined, { passLimit: invalid })).toThrow();
+    }
+    game.play(move(2, 6, 2, 5));
+    expect(() => game.setPassLimit(null)).toThrow("開始前"); expect(game.passLimit).toBe(3);
+    game.undo(); game.setPassLimit(null); expect(game.passLimit).toBeNull();
+    game.resign(); expect(() => game.setPassLimit(1)).toThrow("開始前");
+    expect(() => game.pass()).toThrow("終了");
+  });
+  test("passing cannot evade check, but remains available when there are no board moves without check", () => {
+    const checked = empty(); put(checked, 8, 0, "R", "gote");
+    const game = new ShogiGame(checked);
+    expect(game.canPass).toBe(false); expect(() => game.pass()).toThrow("王手中");
+    expect(game.position).toEqual(checked); expect(game.moveCount).toBe(0);
+    const trapped = empty(); put(trapped, 7, 0, "R", "gote"); put(trapped, 0, 7, "R", "gote");
+    expect(inCheck(trapped)).toBe(false); expect(legalMoves(trapped)).toHaveLength(0);
+    expect([...legalActionIterator(trapped, { sente: 1, gote: 0 })]).toEqual([{ pass: true }]);
+    const waiting = new ShogiGame(trapped, { passLimit: 1 }); waiting.pass();
+    expect(waiting.position.turn).toBe("gote"); expect(waiting.result).toBeNull();
+  });
+  test("unlimited passes can repeat a position, while finite pass resources distinguish positions", () => {
+    const unlimited = new ShogiGame();
+    for (let i = 0; i < 6; i++) unlimited.pass();
+    expect(unlimited.result).toEqual({ reason: "repetition", winner: null });
+    expect(unlimited.canPass).toBe(false);
+    unlimited.undo(); expect(unlimited.result).toBeNull(); expect(unlimited.canPass).toBe(true);
+    const finite = new ShogiGame(undefined, { passLimit: 3 });
+    for (let i = 0; i < 6; i++) finite.pass();
+    expect(finite.result).toBeNull(); expect(finite.passesRemaining).toEqual({ sente: 0, gote: 0 });
+    expect(finite.positionHistory[0]).not.toBe(finite.positionHistory[2]);
+  });
+  test("saves preserve passes and limits, and legacy saves load with passing disabled", () => {
+    const game = new ShogiGame(undefined, { passLimit: 2 });
+    game.pass(); game.play(move(0, 2, 0, 3)); game.pass();
+    const saved = JSON.parse(JSON.stringify(game.save())), loaded = ShogiGame.load(saved);
+    expect(saved.version).toBe(3); expect(saved.passLimit).toBe(2);
+    expect(loaded.position).toEqual(game.position); expect(loaded.records).toEqual(game.records);
+    expect(loaded.passesRemaining).toEqual({ sente: 0, gote: 2 });
+    expect(loaded.positionHistory).toEqual(game.positionHistory);
+    loaded.undo(); expect(loaded.passesRemaining).toEqual({ sente: 1, gote: 2 });
+    const legacy = ShogiGame.load({ version: 1, moves: [move(2, 6, 2, 5)] });
+    expect(legacy.passLimit).toBe(0); expect(legacy.canPass).toBe(false);
+    const unlimited = new ShogiGame(); unlimited.pass();
+    expect(ShogiGame.load(unlimited.save()).passLimit).toBeNull();
+    for (const passLimit of [undefined, -1, .5, "1", Infinity]) expect(() => ShogiGame.load({ version: 2, passLimit, moves: [] })).toThrow();
+    expect(() => ShogiGame.load({ version: 1, moves: [{ pass: true }] })).toThrow();
+    expect(() => ShogiGame.load({ version: 2, passLimit: 0, moves: [{ pass: true }] })).toThrow();
+    expect(() => ShogiGame.load({ version: 2, passLimit: 1, moves: [{ pass: true }, { pass: true }, { pass: true }] })).toThrow();
+    expect(() => ShogiGame.load({ version: 2, passLimit: null, moves: [{ pass: true, ...move(2, 6, 2, 5) }] })).toThrow();
+    expect(() => ShogiGame.load({ version: 2, passLimit: null, moves: [{ pass: false, ...move(2, 6, 2, 5) }] })).toThrow();
   });
 });

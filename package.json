@@ -4,13 +4,18 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "bun ./dev/server.ts",
+    "dev": "bun --watch ./dev/server.ts",
     "build": "bun dev/build.ts",
     "test": "bun test",
     "test:ai": "bun test test/ai.test.ts test/app.test.ts",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
+    "@types/bun": "1.2.23",
     "typescript": "^5.9.3"
+  },
+  "dependencies": {
+    "@jitl/quickjs-singlefile-cjs-release-sync": "^0.32.0",
+    "quickjs-emscripten-core": "^0.32.0"
   }
 }

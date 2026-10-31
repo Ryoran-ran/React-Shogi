@@ -1,2 +1,12 @@
 <!doctype html>
-<html lang="ja"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>将棋 — 対局と動作確認</title><meta name="description" content="2人対局、簡易AIとの対局、AI同士の自動進行に対応した将棋。持ち駒、成り、王手・詰みの判定と棋譜保存が使えます。"><link rel="stylesheet" href="/style.css"></head><body><div id="app"></div><div id="toast" role="status" aria-live="polite"></div><script type="module" src="/web/app.js"></script></body></html>
+<html lang="ja"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>将棋 — 普通の将棋とエディット</title><meta name="description" content="普通の将棋と、盤面や駒の配置を変えて遊ぶエディット。新規作成、保存した配置の編集・対局、2人対局とAI対局に対応しています。"><link rel="stylesheet" href="/style.css"></head><body><div id="app"><main class="boot-screen" role="status"><span class="brand-icon">将</span><h1>将棋を読み込んでいます</h1></main></div><div id="toast" role="status" aria-live="polite"></div>
+<script type="module">
+  try {
+    await import("/web/app.js");
+  } catch (error) {
+    const root = document.querySelector("#app");
+    root.innerHTML = '<main class="boot-screen" role="alert"><span class="brand-icon">将</span><h1>画面を読み込めませんでした</h1><p>開発サーバーを再起動してから、再読み込みしてください。</p><button id="boot-reload">再読み込み</button><details><summary>エラーの詳細</summary><pre id="boot-error"></pre></details></main>';
+    document.querySelector("#boot-error").textContent = error instanceof Error ? error.message : String(error);
+    document.querySelector("#boot-reload").addEventListener("click", () => location.reload());
+  }
+</script></body></html>
