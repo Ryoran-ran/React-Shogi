@@ -1,6 +1,9 @@
+import { PIECE_DEFINITIONS, PIECE_TYPES, HAND_TYPES, PIECE_NAMES, canPromote, pieceState } from "./pieces";
+import type { PieceType, HandType } from "./pieces";
+export { PIECE_TYPES, HAND_TYPES, PIECE_NAMES, PIECE_LABELS, canPromote, pieceState } from "./pieces";
+export type { PieceType, HandType } from "./pieces";
+
 export type Side = "sente" | "gote";
-export type PieceType = "K" | "R" | "B" | "G" | "S" | "N" | "L" | "P";
-export type HandType = Exclude<PieceType, "K">;
 export interface Piece { type: PieceType; side: Side; promoted: boolean }
 export interface Position { width: number; height: number; board: Array<Piece | null>; hands: Record<Side, Record<HandType, number>>; turn: Side }
 export interface Move { from?: number; drop?: HandType; to: number; promote: boolean }
@@ -13,24 +16,20 @@ export interface MoveRecord { move: GameMove; side: Side; notation: string; chec
 interface Frame { position: Position; record: MoveRecord | null; result: Result | null; passesUsed: Record<Side, number> }
 export interface SavedGame { version: 1 | 2 | 3; moves: GameMove[]; passLimit?: number | null; initialPosition?: Position; ending?: "resign" | "agreement" }
 export const isPassMove = (move: GameMove): move is PassMove => "pass" in move && move.pass === true;
-export const HAND_TYPES: HandType[] = ["R", "B", "G", "S", "N", "L", "P"];
 export const SIDE_NAMES = { sente: "先手", gote: "後手" };
-export const PIECE_NAMES: Record<PieceType, string> = { K: "王", R: "飛", B: "角", G: "金", S: "銀", N: "桂", L: "香", P: "歩" };
-export const PIECE_LABELS: Record<PieceType, string> = { K: "王将", R: "飛車", B: "角行", G: "金将", S: "銀将", N: "桂馬", L: "香車", P: "歩兵" };
 export const MIN_BOARD_SIZE = 3, MAX_BOARD_SIZE = 15;
-export const PIECE_TYPES = Object.keys(PIECE_NAMES) as PieceType[];
-const promotedLabels: Partial<Record<PieceType, string>> = { R: "龍王", B: "龍馬", S: "成銀", N: "成桂", L: "成香", P: "と" };
-export const pieceLabel = (p: Piece): string => p.promoted ? promotedLabels[p.type] ?? PIECE_LABELS[p.type] : p.type === "K" && p.side === "gote" ? "玉将" : PIECE_LABELS[p.type];
-const promotedNames: Partial<Record<PieceType, string>> = { R: "龍", B: "馬", S: "成銀", N: "成桂", L: "成香", P: "と" };
 export const opposite = (side: Side): Side => side === "sente" ? "gote" : "sente";
-export const pieceName = (p: Piece): string => p.promoted ? promotedNames[p.type] ?? PIECE_NAMES[p.type] : p.type === "K" && p.side === "gote" ? "玉" : PIECE_NAMES[p.type];
+export function pieceLabel(p: Piece): string { const state = pieceState(p); return p.side === "gote" ? state.goteLabel ?? state.label : state.label; }
+export function pieceName(p: Piece): string { const state = pieceState(p); return p.side === "gote" ? state.goteName ?? state.name : state.name; }
 const inside = (position: Position, x: number, y: number) => x >= 0 && x < position.width && y >= 0 && y < position.height;
 export const promotionDepth = (height: number) => Math.min(3, Math.floor(height / 3));
 const zone = (position: Position, side: Side, y: number) => side === "sente" ? y < promotionDepth(position.height) : y >= position.height - promotionDepth(position.height);
-const canPromote = (type: PieceType) => type !== "K" && type !== "G";
-const forcedPromotion = (position: Position, p: Piece, y: number) => (p.type === "P" || p.type === "L") ? y === (p.side === "sente" ? 0 : position.height - 1) : p.type === "N" && (p.side === "sente" ? y <= 1 : y >= position.height - 2);
+const forcedPromotion = (position: Position, p: Piece, y: number) => {
+  const ranks = PIECE_DEFINITIONS[p.type].promotion?.forcedRanks ?? 0;
+  return (p.side === "sente" ? y : position.height - 1 - y) < ranks;
+};
 const clone = <T,>(v: T): T => structuredClone(v);
-const emptyHand = (): Record<HandType, number> => ({ R: 0, B: 0, G: 0, S: 0, N: 0, L: 0, P: 0 });
+const emptyHand = (): Record<HandType, number> => Object.fromEntries(HAND_TYPES.map(type => [type, 0])) as Record<HandType, number>;
 export const fileLabel = (file: number): string => file < 10 ? "０１２３４５６７８９"[file] : String(file);
 export const rankLabel = (rank: number): string => rank < 10 ? "零一二三四五六七八九"[rank] : rank === 10 ? "十" : `十${"零一二三四五六七八九"[rank - 10]}`;
 export function validateBoardSize(width: number, height: number): void {
@@ -79,25 +78,13 @@ export function initialPosition(): Position {
 export function attacks(position: Position, from: number): number[] {
   const p = position.board[from]; if (!p) return [];
   const x = from % position.width, y = Math.floor(from / position.width), direction = p.side === "sente" ? -1 : 1, out: number[] = [];
-  const add = (dx: number, dy: number, sliding = false) => {
-    for (let n = 1; n <= (sliding ? Math.max(position.width, position.height) - 1 : 1); n++) {
+  for (const { dx, dy, range } of pieceState(p).moves) {
+    for (let n = 1; n <= (range ?? Math.max(position.width, position.height) - 1); n++) {
       const nx = x + dx * n, ny = y + dy * direction * n; if (!inside(position, nx, ny)) break;
       const index = ny * position.width + nx, target = position.board[index];
       // Include friendly occupied squares as defended squares for king safety.
       out.push(index); if (target) break;
     }
-  };
-  const gold = () => [[-1, 1], [0, 1], [1, 1], [-1, 0], [1, 0], [0, -1]].forEach(([dx, dy]) => add(dx, dy));
-  if (p.promoted && ["P", "L", "N", "S"].includes(p.type)) gold();
-  else switch (p.type) {
-    case "K": for (const dx of [-1, 0, 1]) for (const dy of [-1, 0, 1]) if (dx || dy) add(dx, dy); break;
-    case "G": gold(); break;
-    case "S": [[-1, 1], [0, 1], [1, 1], [-1, -1], [1, -1]].forEach(([dx, dy]) => add(dx, dy)); break;
-    case "N": add(-1, 2); add(1, 2); break;
-    case "L": add(0, 1, true); break;
-    case "P": add(0, 1); break;
-    case "R": [[0, 1], [0, -1], [1, 0], [-1, 0]].forEach(([dx, dy]) => add(dx, dy, true)); if (p.promoted) [[1, 1], [1, -1], [-1, 1], [-1, -1]].forEach(([dx, dy]) => add(dx, dy)); break;
-    case "B": [[1, 1], [1, -1], [-1, 1], [-1, -1]].forEach(([dx, dy]) => add(dx, dy, true)); if (p.promoted) [[0, 1], [0, -1], [1, 0], [-1, 0]].forEach(([dx, dy]) => add(dx, dy)); break;
   }
   return out;
 }

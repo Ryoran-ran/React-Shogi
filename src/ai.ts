@@ -1,16 +1,13 @@
 import { attacks, inCheck, legalActionIterator, isPassMove, positionAfterLegalMove, positionKey, HAND_TYPES } from "./shogi";
-import type { GameMove, PassAllowance, Piece, PieceType, Position, Side } from "./shogi";
+import type { GameMove, PassAllowance, Piece, Position, Side } from "./shogi";
+import { PIECE_DEFINITIONS, pieceState } from "./pieces";
 
 export interface AIOptions { maxDepth?: number; maxNodes?: number; maxTimeMs?: number; previousPositions?: string[]; passesRemaining?: PassAllowance }
 export interface AISearchResult { move: GameMove | null; depth: number; nodes: number; score: number }
 export interface AIRequest { id: number; position: Position; options: AIOptions }
 export type AIReply = { id: number; result: AISearchResult } | { id: number; error: string };
-const values: Record<PieceType, number> = { K: 20000, R: 1000, B: 850, G: 550, S: 450, N: 320, L: 300, P: 100 };
 const MATE = 1000000;
-function valueOf(piece: Piece): number {
-  if (!piece.promoted) return values[piece.type];
-  return piece.type === "R" ? 1400 : piece.type === "B" ? 1200 : 550;
-}
+const valueOf = (piece: Piece): number => pieceState(piece).value;
 function evaluate(position: Position): number {
   let score = 0;
   const defended: Record<Side, Map<number, number>> = { sente: new Map(), gote: new Map() };
@@ -30,13 +27,13 @@ function evaluate(position: Position): number {
     }
     score += p.side === "sente" ? value : -value;
   }
-  for (const side of ["sente", "gote"] as Side[]) for (const type of HAND_TYPES) score += (side === "sente" ? 1 : -1) * position.hands[side][type] * values[type] * 1.05;
+  for (const side of ["sente", "gote"] as Side[]) for (const type of HAND_TYPES) score += (side === "sente" ? 1 : -1) * position.hands[side][type] * PIECE_DEFINITIONS[type].value * 1.05;
   return Math.round(position.turn === "sente" ? score : -score);
 }
 function priority(position: Position, move: GameMove): number {
   if (isPassMove(move)) return -10000;
   const target = position.board[move.to], piece = move.from === undefined ? undefined : position.board[move.from];
-  return (target ? valueOf(target) * 10 + values[target.type] - (piece ? valueOf(piece) / 10 : 0) : 0) + (move.promote ? 500 : 0);
+  return (target ? valueOf(target) * 10 + PIECE_DEFINITIONS[target.type].value - (piece ? valueOf(piece) / 10 : 0) : 0) + (move.promote ? 500 : 0);
 }
 function ordered(position: Position, moves: GameMove[]): GameMove[] { return moves.sort((a, b) => priority(position, b) - priority(position, a)); }
 function remainingAfter(remaining: PassAllowance | undefined, side: Side, move: GameMove): PassAllowance | undefined {

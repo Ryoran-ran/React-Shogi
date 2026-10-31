@@ -412,15 +412,6 @@ main { grid-template-rows: auto minmax(0, 1fr); }
 .editor-save-as-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; margin-top: 9px; }
 .editor-save-as-actions button { padding: 8px 4px; font-size: 10px; }
 .editor-save-as-actions .text-button { grid-column: 1 / -1; justify-self: end; }
-.editor-saved-setups { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line); }
-.editor-saved-setups h3 { font-size: 11px; font-weight: 500; }
-.editor-setup-list { max-height: 180px; overflow-y: auto; overscroll-behavior: contain; list-style: none; margin-top: 7px; }
-.editor-setup-list li { display: flex; align-items: center; gap: 5px; padding: 7px 4px; border-bottom: 1px solid var(--line); }
-.editor-setup-list li.is-loaded { background: #edf3e5; }
-.editor-setup-list li > div { min-width: 0; flex: 1; display: grid; gap: 3px; }
-.editor-setup-list strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; font-weight: 500; }
-.editor-setup-list small { font-size: 9px; color: #858c79; }
-.editor-setup-list button { flex-shrink: 0; padding: 6px; font-size: 10px; }
 .editor-storage-error { color: #8c6c37 !important; }
 .editor-pass-limit { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 10px; font-size: 11px; }
 .editor-pass-limit input { width: 84px; }

@@ -40,6 +40,7 @@ test("editor layouts can be saved locally, copied, overwritten, exported, reopen
   try {
     await reload(); const initialMatch = values.get("shogi-game.v1");
     await click("edit-board"); await change("editor-width", "5"); await change("editor-height", "7"); await click("editor-clear");
+    expect(html()).not.toContain("editor-saved-setups"); expect(html()).not.toContain("data-setup-load");
     await click("", { editorSide: "gote" }); await click("", { editorPiece: "S" });
     await listeners.change({ target: { id: "editor-promoted", checked: true } }); await click("", { editorSquare: "19" });
     await change("editor-turn", "gote"); input("editor-setup-name", "  小盤 <A>  "); input("editor-pass-limit", "2");
@@ -62,7 +63,8 @@ test("editor layouts can be saved locally, copied, overwritten, exported, reopen
     expect(second.setup.position.width).toBe(6); expect(readLocalSetups(storage)).toHaveLength(2);
     await click("editor-save-as"); await listeners.keydown({ key: "Escape", preventDefault() {} });
     expect(html()).toContain("盤面エディット"); expect(html()).not.toContain('id="editor-save-as-panel"');
-    await click("", { setupLoad: first.id }); await change("editor-height", "6"); input("editor-setup-name", "A改"); await click("editor-save-local");
+    await click("editor-cancel"); await click("to-title"); await click("title-workshop"); await click("workshop-edit");
+    await click("", { workshopEdit: first.id }); await change("editor-height", "6"); input("editor-setup-name", "A改"); await click("editor-save-local");
     const updated = readLocalSetups(storage);
     expect(updated).toHaveLength(2); expect(updated.find(entry => entry.id === first.id)?.setup.position.height).toBe(6);
     expect(updated.find(entry => entry.id === second.id)?.setup.position.height).toBe(7);
@@ -81,12 +83,13 @@ test("editor layouts can be saved locally, copied, overwritten, exported, reopen
     expect(html()).toBe(beforeInvalid); expect(element("#toast").textContent).toContain("配置を読み込めません");
     await importFile(JSON.stringify(game.save())); expect(html()).toBe(beforeInvalid);
 
-    await reload(); await click("edit-board");
+    await reload(); await click("to-title"); await click("title-workshop"); await click("workshop-edit");
     expect(html()).toContain("A改"); expect(html()).toContain("小盤 B");
     const beforeCopy = values.get(SETUP_STORAGE_KEY);
-    await click("", { setupCopy: first.id }); expect(html()).toContain('value="A改のコピー"');
+    await click("", { workshopCopy: first.id }); expect(html()).toContain('value="A改のコピー"');
     expect(html()).not.toContain("上書き保存"); expect(values.get(SETUP_STORAGE_KEY)).toBe(beforeCopy);
-    await click("", { setupLoad: second.id }); expect(html()).toContain("6 × 7 マス");
+    await click("editor-cancel"); await click("", { workshopEdit: second.id }); expect(html()).toContain("6 × 7 マス");
+    expect(html()).not.toContain("editor-saved-setups"); expect(html()).not.toContain("data-setup-delete");
     expect(html()).toContain('value="小盤 B"'); expect(values.get("shogi-game.v1")).toBe(initialMatch);
     await click("", { editorSide: "sente" }); await click("", { editorPiece: "K" }); await click("", { editorSquare: "41" });
     await click("", { editorSide: "gote" }); await click("", { editorPiece: "K" }); await click("", { editorSquare: "0" });
@@ -100,9 +103,13 @@ test("editor layouts can be saved locally, copied, overwritten, exported, reopen
     const pendingRead = listeners.change({ target: { id: "setup-file-input", files: [{ text: () => new Promise<string>(resolve => { resolveRead = resolve; }) }], value: "" } });
     await click("editor-cancel"); resolveRead(fileText); await pendingRead;
     expect(html()).not.toContain("盤面エディット"); expect((html().match(/data-square=/g) ?? [])).toHaveLength(42);
-    await click("edit-board"); approve = false; await click("", { setupDelete: first.id }); expect(readLocalSetups(storage)).toHaveLength(2);
-    approve = true; await click("", { setupDelete: first.id });
+    await click("to-title"); await click("title-workshop");
+    expect(html()).toContain(`data-workshop-delete="${first.id}"`);
+    approve = false; await click("", { workshopDelete: first.id }); expect(readLocalSetups(storage)).toHaveLength(2);
+    approve = true; await click("", { workshopDelete: first.id });
     expect(readLocalSetups(storage).map(entry => entry.id)).toEqual([second.id]);
+    expect(html()).not.toContain(`data-workshop-delete="${first.id}"`);
+    expect(html()).toContain(`data-workshop-edit="${second.id}"`);
 
     const goodLibrary = values.get(SETUP_STORAGE_KEY)!; values.set(SETUP_STORAGE_KEY, "corrupt library");
     await reload(); await click("edit-board"); expect(html()).toContain("保存済み配置を読み込めません");
