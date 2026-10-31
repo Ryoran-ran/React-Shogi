@@ -11,6 +11,15 @@ describe("built-in piece definitions", () => {
     copy.S.promotion.name = "別の成銀";
     expect(PIECE_DEFINITIONS.P.moves[0].dy).toBe(1);
     expect(PIECE_DEFINITIONS.S.promotion?.name).toBe("成銀");
+    const editable = structuredClone(PIECE_DEFINITIONS);
+    expect(editable.P.moves).not.toBe(editable.P.captures);
+    expect(editable.P.moves[0]).not.toBe(editable.P.captures[0]);
+    expect(editable.G.moves).not.toBe(editable.S.promotion?.moves);
+    expect(editable.G.captures).not.toBe(editable.S.promotion?.captures);
+    for (const definition of Object.values(PIECE_DEFINITIONS)) {
+      expect(definition.captures).toEqual(definition.moves);
+      if (definition.promotion) expect(definition.promotion.captures).toEqual(definition.promotion.moves);
+    }
     expect(PIECE_TYPES).toEqual(["K", "R", "B", "G", "S", "N", "L", "P"]);
     expect(HAND_TYPES).toEqual(["R", "B", "G", "S", "N", "L", "P"]);
   });

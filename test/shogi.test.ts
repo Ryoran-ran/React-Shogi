@@ -64,6 +64,8 @@ describe("shogi", () => {
     const p = empty(); p.board[0] = null; put(p, 4, 0, "K", "gote"); put(p, 4, 2, "G"); put(p, 3, 2, "R"); put(p, 5, 2, "R"); p.hands.sente.P = 1;
     expect(inCheck(p, "gote")).toBe(false);
     expect(legalMoves(p).some(m => m.drop === "P" && m.to === at(4, 1))).toBe(false);
+    p.hands.gote.G = 1; p.hands.gote.P = 1;
+    expect(legalMoves(p).some(m => m.drop === "P" && m.to === at(4, 1))).toBe(false);
     p.board[at(5, 2)] = null;
     expect(legalMoves(p).some(m => m.drop === "P" && m.to === at(4, 1))).toBe(true);
   });
