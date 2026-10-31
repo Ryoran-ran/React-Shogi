@@ -52,6 +52,8 @@ test("human-AI games automatically start, respond, reload, import and resume whi
     if (listeners.change) await change("ai-mode", "human");
     timers.clear(); elements.clear(); workers.length = 0; listeners = {}; stored = JSON.stringify(data);
     await import(`data:text/javascript;base64,${Buffer.from(`${appSource}\n// session ${++session}`).toString("base64")}`);
+    expect(aiTimers()).toHaveLength(0); expect(html()).toContain("遊び方を選んでください");
+    await click("title-continue");
   };
   try {
     await load({ game: new ShogiGame().save(), aiMode: "gote" });

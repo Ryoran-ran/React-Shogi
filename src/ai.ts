@@ -14,14 +14,15 @@ function valueOf(piece: Piece): number {
 function evaluate(position: Position): number {
   let score = 0;
   const defended: Record<Side, Map<number, number>> = { sente: new Map(), gote: new Map() };
-  for (let i = 0; i < 81; i++) {
+  for (let i = 0; i < position.board.length; i++) {
     const p = position.board[i]; if (!p) continue;
     for (const to of attacks(position, i)) defended[p.side].set(to, Math.min(defended[p.side].get(to) ?? Infinity, valueOf(p)));
   }
-  for (let i = 0; i < 81; i++) {
+  for (let i = 0; i < position.board.length; i++) {
     const p = position.board[i]; if (!p) continue;
-    const x = i % 9, y = Math.floor(i / 9), advance = p.side === "sente" ? 8 - y : y;
-    let value = p.type === "K" ? (8 - advance) * 4 : valueOf(p) + advance * (p.type === "P" ? 8 : 3) + (4 - Math.abs(4 - x)) * 2;
+    const x = i % position.width, y = Math.floor(i / position.width), advance = p.side === "sente" ? position.height - 1 - y : y;
+    const center = (position.width - 1) / 2;
+    let value = p.type === "K" ? (position.height - 1 - advance) * 4 : valueOf(p) + advance * (p.type === "P" ? 8 : 3) + (center - Math.abs(center - x)) * 2;
     const enemy = defended[p.side === "sente" ? "gote" : "sente"].get(i);
     if (enemy !== undefined && p.type !== "K") {
       value -= valueOf(p) * (defended[p.side].has(i) ? .12 : .5);

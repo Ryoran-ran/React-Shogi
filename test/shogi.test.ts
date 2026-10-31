@@ -162,7 +162,7 @@ describe("shogi", () => {
     const game = new ShogiGame(undefined, { passLimit: 2 });
     game.pass(); game.play(move(0, 2, 0, 3)); game.pass();
     const saved = JSON.parse(JSON.stringify(game.save())), loaded = ShogiGame.load(saved);
-    expect(saved.version).toBe(2); expect(saved.passLimit).toBe(2);
+    expect(saved.version).toBe(3); expect(saved.passLimit).toBe(2);
     expect(loaded.position).toEqual(game.position); expect(loaded.records).toEqual(game.records);
     expect(loaded.passesRemaining).toEqual({ sente: 0, gote: 2 });
     expect(loaded.positionHistory).toEqual(game.positionHistory);
