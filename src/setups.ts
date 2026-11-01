@@ -1,14 +1,14 @@
 import { validatePassLimit, validatePosition } from "./shogi";
 import type { Position } from "./shogi";
 import { loadPieceRules, hasPieceLibrary, hasPieceScripts, hasPieceProperties, hasExtendedPieceRules, hasPieceIcons } from "./pieces";
-import { hasExtendedBoardSettings } from "./boardsettings";
+import { hasExtendedBoardSettings, hasPlayerBoardRules } from "./boardsettings";
 import type { PieceRules } from "./pieces";
 import { loadRuleScript, validateRuleScript } from "./rulescript";
 
 export const SETUP_STORAGE_KEY = "shogi-setups.v1";
 export const MAX_SETUP_NAME_LENGTH = 80;
 export const MAX_LOCAL_SETUPS = 100;
-export interface SavedSetup { kind: "shogi-setup"; version: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9; name: string; position: Position; passLimit: number | null; pieceRules?: PieceRules; ruleScript?: string }
+export interface SavedSetup { kind: "shogi-setup"; version: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10; name: string; position: Position; passLimit: number | null; pieceRules?: PieceRules; ruleScript?: string }
 export interface LocalSetup { id: string; updatedAt: string; setup: SavedSetup }
 type SetupStorage = Pick<Storage, "getItem" | "setItem">;
 
@@ -18,13 +18,14 @@ export function createSetup(position: Position, passLimit: number | null, name =
   validatePosition(position, rules); validatePassLimit(passLimit);
   const title = name.trim() || `${position.width}×${position.height}の配置`;
   if (title.length > MAX_SETUP_NAME_LENGTH) throw new Error(`配置名は${MAX_SETUP_NAME_LENGTH}文字以内にしてください`);
-  return { kind: "shogi-setup", version: position.boardTheme||hasPieceIcons(rules)?9:position.squareColors ? 8 : hasExtendedBoardSettings(position)||hasExtendedPieceRules(rules)?7:position.settings || hasPieceProperties(rules) ? 6 : hasPieceScripts(rules) ? 5 : ruleScript ? 4 : hasPieceLibrary(rules) ? 3 : custom ? 2 : 1, name: title, position: structuredClone(position), passLimit, ...(custom || ruleScript || position.settings || position.squareColors || position.boardTheme ? { pieceRules: rules } : {}), ...(ruleScript ? { ruleScript } : {}) };
+  return { kind: "shogi-setup", version: hasPlayerBoardRules(position)?10:position.boardTheme||hasPieceIcons(rules)?9:position.squareColors ? 8 : hasExtendedBoardSettings(position)||hasExtendedPieceRules(rules)?7:position.settings || hasPieceProperties(rules) ? 6 : hasPieceScripts(rules) ? 5 : ruleScript ? 4 : hasPieceLibrary(rules) ? 3 : custom ? 2 : 1, name: title, position: structuredClone(position), passLimit, ...(custom || ruleScript || position.settings || position.squareColors || position.boardTheme ? { pieceRules: rules } : {}), ...(ruleScript ? { ruleScript } : {}) };
 }
 
 export function loadSetup(data: unknown): SavedSetup {
   if (!data || typeof data !== "object") throw new Error("配置のJSONファイルではありません");
   const setup = data as SavedSetup;
-  if (setup.kind !== "shogi-setup" || ![1, 2, 3, 4, 5, 6, 7, 8, 9].includes(setup.version) || typeof setup.name !== "string" || (setup.version < 4 && setup.ruleScript !== undefined) || (setup.version === 4 && !setup.ruleScript)) throw new Error("対応していない配置データです。配置のJSONファイルを選んでください");
+  if (setup.kind !== "shogi-setup" || ![1, 2, 3, 4, 5, 6, 7, 8, 9, 10].includes(setup.version) || typeof setup.name !== "string" || (setup.version < 4 && setup.ruleScript !== undefined) || (setup.version === 4 && !setup.ruleScript)) throw new Error("対応していない配置データです。配置のJSONファイルを選んでください");
+  if(setup.version<10&&hasPlayerBoardRules(setup.position??{}))throw new Error("先後別のルールの保存形式が壊れています");
   if(setup.version<9&&(setup.position?.boardTheme!==undefined||hasPieceIcons(loadPieceRules(setup.pieceRules))))throw new Error("駒や盤面の表示の保存形式が壊れています");
   if(setup.version<8&&setup.position?.squareColors!==undefined)throw new Error("盤面の色の保存形式が壊れています");
   if(setup.version<7&&(hasExtendedBoardSettings(setup.position)||hasExtendedPieceRules(loadPieceRules(setup.pieceRules))))throw new Error("追加の勝敗条件・駒の設定の保存形式が壊れています");

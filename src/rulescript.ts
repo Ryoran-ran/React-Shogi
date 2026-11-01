@@ -90,7 +90,7 @@ function scriptProgram(rules: Record<string, any>, input: string, pieceRules: Re
     delete e._pieceId; delete e._capturedId; delete e._captureId;
     const ctx = {
       event: e, actor, self, side: self?.side ?? e.side ?? p.turn, turn: p.turn, ply: state.ply,
-      settings: copy(payload.settings), royalTypes: payload.royals.slice(),
+      settings: copy(payload.settings), settingsFor: (side:string) => {if(side!=="sente"&&side!=="gote")fail("先後を指定してください");return copy(payload.playerSettings[side]);}, royalTypes: payload.royals.slice(),
       state: state.data,
       board: {
         width: p.width, height: p.height,
@@ -149,13 +149,13 @@ function scriptProgram(rules: Record<string, any>, input: string, pieceRules: Re
         const event={from,to:from,capturedSquare:target,side:moving.side,piece:moving,captured,automatic:true,_pieceId:identity(p.board[from]),_capturedId:identity(p.board[target]),_captureId:++captureSequence};
         dispatch("beforeCapture",event);
         if(!p.board[from]||identities.get(p.board[from])!==event._pieceId||!p.board[target]||identities.get(p.board[target])!==event._capturedId)fail("捕獲前の効果で対象が変更されました");
-        if(payload.settings.useHands&&!payload.royals.includes(captured.type))p.hands[moving.side][captured.type]=(p.hands[moving.side][captured.type]??0)+1;
+        if(payload.playerSettings[moving.side].useHands&&!payload.royals.includes(captured.type))p.hands[moving.side][captured.type]=(p.hands[moving.side][captured.type]??0)+1;
         p.board[target]=null;effects.push(`${captured.type}を${target}から捕獲`);enqueue("afterCapture",event);enqueue("afterCaptured",event);
       },
       discardCapture: () => {
         if (!e.captured) fail("捕獲された駒がありません");
         if (type !== "afterCapture" && type !== "afterCaptured") fail("discardCapture は afterCapture / afterCaptured で使ってください");
-        if (!payload.settings.useHands || payload.royals.includes(e.captured.type)) return;
+        if (!payload.playerSettings[e.piece.side].useHands || payload.royals.includes(e.captured.type)) return;
         if (discardedCaptures.has(event._captureId)) return;
         const hand = p.hands[e.side]; if (!(hand[e.captured.type] > 0)) fail("捕獲した持ち駒がありません");
         hand[e.captured.type]--; discardedCaptures.add(event._captureId); effects.push(`${e.captured.type}は持ち駒にならず消滅`);
@@ -210,7 +210,7 @@ function scriptProgram(rules: Record<string, any>, input: string, pieceRules: Re
     if (target) dispatch("beforeCapture", event);
     if (!p.board[from] || identities.get(p.board[from]) !== event._pieceId || JSON.stringify(p.board[to]) !== JSON.stringify(target)) fail("捕獲前の効果で対象が変更されました");
     moving = copy(p.board[from]);
-    if (target && !payload.royals.includes(target.type) && payload.settings.useHands) p.hands[moving.side][target.type] = (p.hands[moving.side][target.type] ?? 0) + 1;
+    if (target && !payload.royals.includes(target.type) && payload.playerSettings[moving.side].useHands) p.hands[moving.side][target.type] = (p.hands[moving.side][target.type] ?? 0) + 1;
     p.board[to] = inherit(p.board[from], { ...moving, promoted: moving.promoted || promote }); p.board[from] = null;
     if (automatic) effects.push(`${moving.type}が${from}から${to}へ自動移動`);
     if (target) { enqueue("afterCapture", event); enqueue("afterCaptured", event); }
@@ -222,7 +222,7 @@ function scriptProgram(rules: Record<string, any>, input: string, pieceRules: Re
       dispatch("onStart", { side: p.turn }); drain(); dispatch("turnStart", { side: p.turn }); drain();
     } else {
       const move = payload.move, side = p.turn, passing = move.pass === true;
-      const event = { side, from: move.from, to: move.to, piece: passing ? null : move.drop ? { type: move.drop, side, promoted: false } : copy(p.board[move.from]), automatic: false, pass: passing, _pieceId: identity(p.board[move.from]) };
+      const event = { side, from: move.from, to: move.to, drop: move.drop, piece: passing ? null : move.drop ? { type: move.drop, side, promoted: false } : copy(p.board[move.from]), automatic: false, pass: passing, _pieceId: identity(p.board[move.from]) };
       dispatch("validateMove", event); drain(); dispatch("beforeMove", event); drain();
       if (!passing) {
         if (move.drop) {
@@ -261,10 +261,11 @@ export function validateRuleScript(source: string, rules: PieceRules = {}): void
 }
 const transitionCache = new Map<string, ScriptOutcome>();
 export function runRuleScript(source: string, position: Position, rules: PieceRules, move?: GameMove, trace = false): ScriptOutcome {
+  source=loadRuleScript(source);
   const key = JSON.stringify([source, position, rules, move, trace]);
   const cached = transitionCache.get(key); if (cached) return structuredClone(cached);
   const types=pieceTypes(rules),attacks=Object.fromEntries(types.map(type=>[type,{normal:pieceState({type,promoted:false},rules).captures,promoted:canPromote(type,rules)?pieceState({type,promoted:true},rules).captures:[]}]));
-  const result: ScriptOutcome = JSON.parse(evaluateRule(source, program, JSON.stringify({ position, move, start: !move, trace, attacks, settings: boardSettings(position), royals: royalTypes(rules), defaults: Object.fromEntries(Object.entries(rules).filter(([, entry]) => entry?.initialData).map(([type, entry]) => [type, entry!.initialData])), types, promotable: types.filter(type => canPromote(type, rules)) }), pieceSources(rules)));
+  const result: ScriptOutcome = JSON.parse(evaluateRule(source, program, JSON.stringify({ position, move, start: !move, trace, attacks, settings: boardSettings(position), playerSettings:{sente:boardSettings(position,"sente"),gote:boardSettings(position,"gote")}, royals: royalTypes(rules), defaults: Object.fromEntries(Object.entries(rules).filter(([, entry]) => entry?.initialData).map(([type, entry]) => [type, entry!.initialData])), types, promotable: types.filter(type => canPromote(type, rules)) }), pieceSources(rules)));
   if (result.error) throw new RuleScriptError(`ルールスクリプト：${result.error}`, result.trace ?? []);
   if (result.position) {
     if (result.position.width !== position.width || result.position.height !== position.height || result.position.turn !== (move ? position.turn === "sente" ? "gote" : "sente" : position.turn)) throw new Error("ルールが盤面サイズ・手番を不正に変更しました");

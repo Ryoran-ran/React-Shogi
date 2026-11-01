@@ -1,4 +1,5 @@
-import { emptyPosition } from "./shogi";
+import {createChessBoardScript} from "./chessscript";
+import { emptyPosition, initialPosition } from "./shogi";
 import { createSetup } from "./setups";
 import { loadPieceRules } from "./pieces";
 import { loadBoardSettings } from "./boardsettings";
@@ -26,6 +27,7 @@ export function applyChessAppearance(position:Position,rules:PieceRules){
 const PAWN_SCRIPT=`const PAWN="custom_pawn";
 export default {
   validateMove(ctx) {
+    if(ctx.event.drop) return Math.floor(ctx.event.to/ctx.board.width)!==(ctx.side==="sente"?0:ctx.board.height-1);
     const {from,to}=ctx.event,w=ctx.board.width,dx=to%w-from%w;
     const dy=(Math.floor(from/w)-Math.floor(to/w))*(ctx.side==="sente"?1:-1);
     if(dx===0) {
@@ -40,7 +42,7 @@ export default {
     return ctx.self.data?.enPassant!==false&&!!ep&&ep.side!==ctx.side&&ep.target===to&&victim?.type===PAWN&&victim.side!==ctx.side;
   },
   beforeMove(ctx) {
-    if(ctx.event.from%ctx.board.width!==ctx.event.to%ctx.board.width&&!ctx.board.at(ctx.event.to)) ctx.capturePiece(ctx.event.from,ctx.state.chess.ep.pawn);
+    if(ctx.event.from!==undefined&&ctx.event.from%ctx.board.width!==ctx.event.to%ctx.board.width&&!ctx.board.at(ctx.event.to)) ctx.capturePiece(ctx.event.from,ctx.state.chess.ep.pawn);
   },
   afterMove(ctx) {
     ctx.setPieceData(ctx.self.square,{...ctx.self.data,moved:true});
@@ -59,7 +61,7 @@ const KING_SCRIPT=`export default {
     if(Math.abs(dx)!==2) return true;
     const home=ctx.side==="sente"?ctx.board.height-1:0,sign=dx>0?1:-1;
     if(ctx.self.data?.castling===false||ctx.self.data?.moved||Math.floor(from/w)!==home||Math.floor(to/w)!==home||from%w!==(ctx.self.data?.castleFile??4)) return false;
-    const rookSquare=home*w+(sign>0?w-1:0),rook=ctx.board.at(rookSquare);
+    const rookSquare=home*w+(sign>0?(ctx.self.data?.castleRookRight??w-1):(ctx.self.data?.castleRookLeft??0)),rook=ctx.board.at(rookSquare);
     if(rook?.type!==(ctx.self.data?.castlePartner??"custom_rook")||rook.side!==ctx.side||rook.data?.moved) return false;
     for(let square=Math.min(from,rookSquare)+1;square<Math.max(from,rookSquare);square++) if(ctx.board.at(square)) return false;
     const enemy=ctx.side==="sente"?"gote":"sente";
@@ -70,64 +72,14 @@ const KING_SCRIPT=`export default {
     const {from,to}=ctx.event,w=ctx.board.width;
     if(Math.abs(to%w-from%w)===2) {
       const row=Math.floor(from/w),sign=to>from?1:-1;
-      ctx.move(row*w+(sign>0?w-1:0),from+sign);
+      ctx.move(row*w+(sign>0?(ctx.self.data?.castleRookRight??w-1):(ctx.self.data?.castleRookLeft??0)),from+sign);
     }
   },
   afterMove(ctx) { ctx.setPieceData(ctx.self.square,{...ctx.self.data,moved:true}); }
 };`;
 const ROOK_SCRIPT=`export default { afterMove(ctx) { ctx.setPieceData(ctx.self.square,{...ctx.self.data,moved:true}); } };`;
 
-export const CHESS_BOARD_SCRIPT=`// この作例の勝敗・引き分け条件です。数値や処理を編集できます。
-const CLAIM_DRAWS=true, AUTO_REPETITION=5, AUTO_QUIET_MOVES=150;
-const PAWN="custom_pawn",KING="custom_king",ROOK="custom_rook";
-function effectiveEP(ctx) {
-  const ep=ctx.state.chess.ep,w=ctx.board.width;
-  if(!ep||ep.side===ctx.turn||ctx.board.at(ep.target)||ctx.board.at(ep.pawn)?.type!==PAWN) return "-";
-  for(const entry of ctx.board.pieces(ctx.turn)) {
-    if(entry.piece.type!==PAWN||entry.piece.data?.enPassant===false||Math.abs(entry.square%w-ep.target%w)!==1||ctx.board.forward(entry.square,ctx.turn)!==ep.target+(entry.square%w-ep.target%w)) continue;
-    const board=ctx.board.snapshot();board[entry.square]=null;board[ep.pawn]=null;board[ep.target]=entry.piece;
-    const king=board.findIndex(piece=>piece?.side===ctx.turn&&piece.type===KING);
-    if(king>=0&&!ctx.board.isAttacked(king,ctx.turn==="sente"?"gote":"sente",board)) return String(ep.target);
-  }
-  return "-";
-}
-function positionKey(ctx) {
-  const w=ctx.board.width,board=ctx.board.snapshot();let rights="";
-  for(const side of ["sente","gote"]) {
-    const row=side==="sente"?ctx.board.height-1:0,king=board[row*w+4];
-    if(king?.type!==KING||king.side!==side||king.data?.moved||king.data?.castling===false) continue;
-    for(const file of [0,w-1]) { const rook=board[row*w+file];if(rook?.type===ROOK&&rook.side===side&&!rook.data?.moved) rights+=side[0]+file; }
-  }
-  const pieces=board.map(piece=>piece?String.fromCharCode(256+ctx.pieceTypes.indexOf(piece.type)*4+(piece.side==="gote"?2:0)+(piece.promoted?1:0)):".").join("");
-  return ctx.turn+"|"+pieces+"|"+rights+"|"+effectiveEP(ctx);
-}
-export default {
-  onStart(ctx) {
-    const old=ctx.state.chess;
-    ctx.state.chess={halfmove:old?.halfmove??0,ep:old?.ep??null,positions:{},captured:false};
-  },
-  beforeMove(ctx) { ctx.state.chess.captured=false; },
-  afterCapture(ctx) { ctx.state.chess.captured=true; },
-  afterMove(ctx) {
-    if(ctx.event.automatic) return;
-    const state=ctx.state.chess,{from,to}=ctx.event,w=ctx.board.width;
-    state.halfmove=ctx.actor.type===PAWN||state.captured?0:state.halfmove+1;
-    state.ep=ctx.actor.type===PAWN&&Math.abs(to-from)===2*w?{target:(from+to)/2,pawn:to,side:ctx.side}:null;
-  },
-  checkResult(ctx) {
-    const state=ctx.state.chess,key=positionKey(ctx);ctx.setRepetitionKey(key);
-    if(state.halfmove===0) state.positions={};
-    state.positions[key]=(state.positions[key]??0)+1;
-    if(CLAIM_DRAWS) {
-      if(state.positions[key]>=3||state.halfmove>=100) ctx.allowDrawClaim(state.positions[key]>=3?"同一局面3回":"50手ルール");
-      if(state.halfmove>=99||Object.values(state.positions).some(count=>count>=2)) ctx.checkDrawClaimAfterMove();
-    }
-    const others=ctx.board.pieces().filter(entry=>entry.piece.type!==KING);
-    const minor=type=>type==="custom_bishop"||type==="custom_knight";
-    const bishops=others.length>0&&others.every(entry=>entry.piece.type==="custom_bishop")&&new Set(others.map(entry=>(entry.square%ctx.board.width+Math.floor(entry.square/ctx.board.width))%2)).size===1;
-    if(!others.length||others.length===1&&minor(others[0].piece.type)||bishops||AUTO_REPETITION&&state.positions[key]>=AUTO_REPETITION||AUTO_QUIET_MOVES&&state.halfmove>=AUTO_QUIET_MOVES) ctx.draw({unlessMate:true});
-  }
-};`;
+export const CHESS_BOARD_SCRIPT=createChessBoardScript();
 
 function table(kind:keyof typeof CHESS_PIECES):number[][]{
   return Array.from({length:8},(_,y)=>Array.from({length:8},(_,x)=>{
@@ -168,4 +120,19 @@ export function createChessPreset(){
   position.settings=loadBoardSettings({nifu:false,pawnDropMate:false,useHands:false,promotionDepth:0,noMoves:"draw",repetitionLimit:null,perpetualCheckLoses:false});
   const styled=applyChessAppearance(position,rules);
   return createSetup(styled.position,0,"チェス",styled.rules,CHESS_BOARD_SCRIPT);
+}
+
+/** Both armies use their own rules on one editable board. The ninth file starts empty for chess. */
+export function createShogiChessPreset(){
+  const chess=createChessPreset(),position=initialPosition(),entries={...chess.pieceRules};
+  delete entries.K;
+  entries[CHESS_PIECES.k]={...entries[CHESS_PIECES.k],initialData:{...entries[CHESS_PIECES.k]!.initialData,castleRookRight:7,castleRookLeft:0}};
+  for(let index=0;index<position.board.length;index++)if(position.board[index]?.side==="gote")position.board[index]=null;
+  for(let y=0;y<2;y++)for(let x=0;x<8;x++)position.board[y*9+x]=structuredClone(chess.position.board[y*8+x]);
+  position.settings=loadBoardSettings({playerRules:{
+    sente:{name:"将棋"},
+    gote:{name:"チェス",nifu:false,pawnDropMate:false,useHands:false,promotionDepth:0,noMoves:"draw",perpetualCheckLoses:false},
+  }});
+  const styled=applyChessAppearance(position,loadPieceRules(entries));
+  return createSetup(styled.position,0,"将棋VSチェス",styled.rules,createChessBoardScript(true));
 }

@@ -805,3 +805,8 @@ main { grid-template-rows: auto minmax(0, 1fr); }
 .board-theme-chess .square, .board-theme-chess > span[style*="--square-color"] { border-color: #758c6e; }
 .board-theme-chess .file-labels, .board-theme-chess .rank-labels { color: #637958; font-family: sans-serif; }
 .piece-design-fields label:has(select[data-design-field="icon"]) { grid-column: 1 / -1; }
+.editor-player-rules summary { cursor: pointer; font-size: 12px; }
+.editor-player-rules fieldset { min-width: 0; margin: 12px 0 0; padding: 10px; border: 1px solid var(--line); border-radius: 6px; }
+.editor-player-rules legend { font-size: 12px; padding: 0 4px; }
+.editor-player-rules .editor-turn-label { align-items: start; flex-direction: column; gap: 5px; }
+.editor-player-rules input, .editor-player-rules select { width: 100%; }

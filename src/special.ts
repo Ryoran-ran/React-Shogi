@@ -26,6 +26,11 @@ export const SPECIAL_GAMES: readonly SpecialGameDefinition[] = Object.freeze([
     description: "既存エディターの駒・配置・ルールコードで作ったチェスの作例です。移動や効果を変えて、独自のゲームへ発展させられます。",
     editor: Object.freeze({ policy: "guidelines" as const, ready: true, requirements: Object.freeze({ width: 8, height: 8, additionalPieceTypes: 6 }) }),
   }),
+  Object.freeze({
+    id:"shogi-chess",name:"将棋VSチェス",emblem:"VS",status:"ready" as const,
+    description:"9×9盤で先手は将棋、後手はチェス。将棋側だけが持ち駒を使い、取ったチェス駒も打てます。チェス側の初期配置は左から8列で、右端1列は空きです。",
+    editor:Object.freeze({policy:"guidelines" as const,ready:true,requirements:Object.freeze({width:9,height:9,additionalPieceTypes:6})}),
+  }),
 ]);
 
 export function getSpecialGame(id: string): SpecialGameDefinition {

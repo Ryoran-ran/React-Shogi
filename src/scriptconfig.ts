@@ -1,3 +1,4 @@
+import {upgradeChessBoardScript} from "./chessscript";
 export const MAX_SCRIPT_LENGTH = 30000;
 export type ScriptValue = null | boolean | number | string | ScriptValue[] | { [key: string]: ScriptValue };
 export type ScriptData = { [key: string]: ScriptValue };
@@ -13,12 +14,13 @@ export function validateScriptData(value: unknown): asserts value is ScriptData 
       visit(child, depth + 1);
     }
   };
-  if (!value || typeof value !== "object" || Array.isArray(value) || JSON.stringify(value).length > 20000) throw new Error("ルールの独自データが壊れています");
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("ルールの独自データが壊れています");
+  if(JSON.stringify(value).length>20000)throw new Error("ルールの独自データが大きすぎます（20,000文字まで）");
   visit(value, 0);
 }
 export const SCRIPT_HOOKS = ["onStart", "validateMove", "beforeMove", "beforeCapture", "afterCapture", "afterCaptured", "afterMove", "afterDestroy", "turnEnd", "turnStart", "checkResult"];
 export const PIECE_SCRIPT_HOOKS = SCRIPT_HOOKS.filter(hook => hook !== "checkResult");
 export function loadRuleScript(value: unknown = ""): string {
   if (typeof value !== "string" || value.length > MAX_SCRIPT_LENGTH) throw new Error(`ルールコードは${MAX_SCRIPT_LENGTH}文字以内で入力してください`);
-  return value.trim() ? value : "";
+  return value.trim() ? upgradeChessBoardScript(value) : "";
 }

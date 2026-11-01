@@ -34,7 +34,7 @@ function evaluate(position: Position, rules: PieceRules, ruleScript = "", checkB
     }
     score += p.side === "sente" ? value : -value;
   }
-  if (boardSettings(position).useHands) for (const side of ["sente", "gote"] as Side[]) for (const type of handTypes(rules)) score += (side === "sente" ? 1 : -1) * (position.hands[side][type] ?? 0) * pieceDefinition(type, rules).value * 1.05;
+  for (const side of ["sente", "gote"] as Side[]) if (boardSettings(position,side).useHands) for (const type of handTypes(rules)) score += (side === "sente" ? 1 : -1) * (position.hands[side][type] ?? 0) * pieceDefinition(type, rules).value * 1.05;
   return Math.round(position.turn === "sente" ? score : -score);
 }
 function priority(position: Position, move: GameMove, rules: PieceRules): number {
@@ -93,7 +93,7 @@ export function chooseAIMove(position: Position, options: AIOptions = {}, onCand
   }
   if (!bestMove) {
     const result=ruleResult(position,rules,ruleScript,options.passesRemaining)??royalResult(position,rules);
-    const score=result ? result.winner===null?0:result.winner===position.turn?MATE:-MATE : !inCheck(position,position.turn,rules)&&boardSettings(position).noMoves==="draw"?0:-MATE;
+    const score=result ? result.winner===null?0:result.winner===position.turn?MATE:-MATE : !inCheck(position,position.turn,rules)&&boardSettings(position,position.turn).noMoves==="draw"?0:-MATE;
     return {move:null,score,depth:0,nodes:0};
   }
   if(choice)publish(choice.move,choice.score,true);
@@ -105,12 +105,12 @@ export function chooseAIMove(position: Position, options: AIOptions = {}, onCand
     if ((hasRuleScripts(ruleScript, rules) && current.ruleState?.result) || royalResult(current, rules)) return evaluate(current, rules, ruleScript,checkBudget);
     if (depth === 0) {
       if (inCheck(current, current.turn, rules) && legalActionIterator(current, remaining, rules, ruleScript,checkBudget).next().done) return -MATE + ply;
-      if(boardSettings(current).noMoves==="draw"&&!inCheck(current,current.turn,rules)&&legalActionIterator(current,remaining,rules,ruleScript,checkBudget).next().done)return 0;
+      if(boardSettings(current,current.turn).noMoves==="draw"&&!inCheck(current,current.turn,rules)&&legalActionIterator(current,remaining,rules,ruleScript,checkBudget).next().done)return 0;
       return evaluate(current, rules, ruleScript,checkBudget);
     }
     const moves: GameMove[] = [];
     for (const move of legalActionIterator(current, remaining, rules, ruleScript,checkBudget)) { checkBudget(); moves.push(move); }
-    if (!moves.length) return !inCheck(current,current.turn,rules)&&boardSettings(current).noMoves==="draw"?0:-MATE + ply;
+    if (!moves.length) return !inCheck(current,current.turn,rules)&&boardSettings(current,current.turn).noMoves==="draw"?0:-MATE + ply;
     let best = -Infinity;
     for (const move of ordered(current, moves, rules)) {
       const score = -search(positionAfterLegalMove(current, move, rules, ruleScript), remainingAfter(remaining, current.turn, move), depth - 1, -beta, -alpha, ply + 1);

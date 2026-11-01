@@ -6,7 +6,7 @@ import { loadRuleScript, validateRuleScript } from "./rulescript";
 import { validateScriptData } from "./scriptconfig";
 import type { ScriptData } from "./scriptconfig";
 import { boardSettings, configuredBoardSettings } from "./boardsettings";
-import type { BoardSettings } from "./boardsettings";
+import type { BoardSettings, PlayerRuleOverrides } from "./boardsettings";
 import { squareColor, validateSquareColors } from "./boarddesign";
 export interface EditorSnapshot { position: Position; rules: PieceRules; script: string }
 export interface PieceRegion { width: number; height: number; cells: Array<Piece | null>; squareColors?: Array<string | null> }
@@ -78,6 +78,13 @@ export class BoardEditor {
     this.commit(next);
   }
   setSettings(change: Partial<BoardSettings>): void { const next = this.position, settings = configuredBoardSettings({ ...boardSettings(next), ...change }); if (settings) next.settings = settings; else delete next.settings; this.commit(next); }
+  setPlayerRule(side:Side,key:keyof PlayerRuleOverrides,value:PlayerRuleOverrides[keyof PlayerRuleOverrides]|undefined):void {
+    if(side!=="sente"&&side!=="gote")throw new Error("先後を選んでください");
+    const players=structuredClone(this.position.settings?.playerRules??{}),overrides={...players[side]};
+    if(value===undefined)delete overrides[key];else Object.assign(overrides,{[key]:value});
+    if(Object.keys(overrides).length)players[side]=overrides;else delete players[side];
+    this.setSettings({playerRules:Object.keys(players).length?players:undefined});
+  }
   setHand(side: Side, type: PieceType, count: number): void {
     if (!["sente", "gote"].includes(side) || !handTypes(this.rules).includes(type) || isRoyal(type, this.rules) || !Number.isSafeInteger(count) || count < 0 || count > 225) throw new Error("持ち駒は0〜225枚で設定してください");
     const next = this.position; next.hands[side][type] = count; this.commit(next);
@@ -124,6 +131,7 @@ export class BoardEditor {
   swapSides(): void {
     const next = this.position; next.board = next.board.reverse().map(piece => piece ? { ...piece, side: piece.side === "sente" ? "gote" : "sente" } : null);
     if(next.squareColors)next.squareColors.reverse();
+    if(next.settings?.playerRules){const players=next.settings.playerRules;next.settings.playerRules={...(players.gote?{sente:players.gote}:{}),...(players.sente?{gote:players.sente}:{})};}
     next.hands = { sente: next.hands.gote, gote: next.hands.sente }; next.turn = next.turn === "sente" ? "gote" : "sente"; this.commit(next);
   }
   setPieceMovements(type: PieceType, promoted: boolean, action: PieceAction, movements: readonly PieceMovement[]): void {

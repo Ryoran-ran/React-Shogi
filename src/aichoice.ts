@@ -20,7 +20,7 @@ export function aiVariation(position: Position, rules: PieceRules, seed: number 
     if (value > 0) unit = Math.min(unit, value);
   };
   for (const piece of position.board) if (piece) countPiece(piece.type, 1);
-  if (boardSettings(position).useHands) for (const hand of Object.values(position.hands)) for (const [type, amount] of Object.entries(hand)) countPiece(type as PieceType, amount);
+  for (const side of ["sente","gote"] as const) if (boardSettings(position,side).useHands) for (const [type, amount] of Object.entries(position.hands[side])) countPiece(type as PieceType, amount);
   const stage = count <= 6 || ply >= 60 ? .02 : ply >= 16 ? .06 : .18;
   return { seed: Math.trunc(seed) >>> 0, tolerance: (Number.isFinite(unit) ? unit : 100) * stage };
 }

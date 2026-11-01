@@ -7,6 +7,7 @@ import { ChessGame, createChessSetup } from "../src/chesscore";
 import { legacyChessSetup } from "../src/chesslegacy";
 import { EDITOR_DRAFT_KEY } from "../src/editordraft";
 import { readLocalSetups, saveLocalSetup } from "../src/setups";
+import {quietHistoryFixture} from "./historyfixture";
 
 async function withUI(run:(ui:any)=>Promise<void>) {
   const url=new URL("../web/app.ts",import.meta.url);
@@ -60,6 +61,26 @@ test("Special chess uses the existing piece/code editor, shared saves, test sess
   await click("to-title");await click("title-workshop");await click("workshop-edit");await click("",{workshopCopy:saved.id});expect(html()).toContain('value="チェスのコピー"');expect(draft().snapshot.rules[added]).toBeDefined();
 }),15000);
 
+test("Special mixed play keeps faction rules, hand visibility, editor recovery and shared saves",async()=>withUI(async ui=>{
+  const {click,change,reload,html,draft,values,storage}=ui;
+  await reload();await click("title-special");expect(html()).toContain('data-special-play="shogi-chess"');
+  await click("",{specialPlay:"shogi-chess"});expect(html()).toContain("将棋の手番");
+  expect((html().match(/data-square=/g)??[])).toHaveLength(81);expect(html().match(/class="piece-icon"/g)).toHaveLength(16);
+  expect(html()).toContain('data-player="sente"');expect(html()).not.toContain('data-player="gote"');
+  await click("",{square:"54"});await click("",{square:"45"});expect(html()).toContain("チェスの手番");
+  await click("",{square:"9"});await click("",{square:"27"});expect(JSON.parse(values.get("shogi-game.v1")).game.moves).toHaveLength(2);
+  await click("edit-board");expect(html()).toContain('data-player-rule="useHands"');expect(html()).toContain('value="チェス"');
+  await change("","true",{ruleSide:"gote",playerRule:"useHands"});expect(draft().snapshot.position.settings.playerRules.gote.useHands).toBe(true);
+  await click("editor-undo");expect(draft().snapshot.position.settings.playerRules.gote.useHands).toBe(false);
+  await change("","将棋軍",{ruleSide:"sente",playerRule:"name"});expect(draft().snapshot.position.settings.playerRules.sente.name).toBe("将棋軍");
+  await reload();await click("editor-restore-draft");expect(html()).toContain("将棋軍");
+  await click("editor-save-local");expect(readLocalSetups(storage)[0]?.setup.version).toBe(10);
+  await click("editor-apply");const saved=JSON.parse(values.get("shogi-game.v1")).game;
+  expect(saved.version).toBe(12);expect(ShogiGame.load(saved).position.settings?.playerRules?.sente?.name).toBe("将棋軍");expect(html()).not.toContain('data-player="gote"');
+  await click("edit-board");await change("","<b>&将棋",{ruleSide:"sente",playerRule:"name"});await click("editor-apply");
+  expect(html()).toContain("&lt;b&gt;&amp;将棋");expect(html()).not.toContain("<b>&将棋");
+}),15000);
+
 test("shared draw-claim controls and legacy imports keep chess in the common game format",async()=>withUI(async ui=>{
   const {values,storage,click,reload,html,importFile}=ui;
   const setup=legacyChessSetup(createChessSetup('7k/8/8/8/8/8/R7/K7 w - - 99 1'));
@@ -71,6 +92,20 @@ test("shared draw-claim controls and legacy imports keep chess in the common gam
   await click("to-title");values.set("special-chess.v1",JSON.stringify({version:1,game:old.save()}));await click("title-special");expect(html()).toContain('id="special-import-legacy"');await click("special-import-legacy");
   for(let i=0;i<30&&!html().includes('data-square="0"');i++)await Bun.sleep(10);
   expect(html()).toContain('data-square="0"');expect(values.get("special-chess.v1")).toBeTruthy();expect(JSON.parse(values.get("shogi-game.v1")).game.version).toBe(11);
+}),15000);
+
+test("an old long mixed autosave resumes with bounded history and accepts the next AI move",async()=>withUI(async ui=>{
+  const fixture=quietHistoryFixture(),legacy=(await Bun.file(new URL('./fixtures/chess-history-v1.txt',import.meta.url)).text()).replace('const MIXED=false','const MIXED=true');
+  const record={version:12,initialPosition:fixture.position,passLimit:0,pieceRules:fixture.setup.pieceRules,ruleScript:legacy,moves:Array.from({length:83},(_,ply)=>fixture.move(ply%2?'gote':'sente'))};
+  ui.values.set('shogi-game.v1',JSON.stringify({game:record,gameKind:'custom',gameName:'将棋VSチェス',aiMode:'human'}));
+  await ui.reload();await ui.click('title-continue');expect(ui.html()).toContain('84 手目');
+  await ui.click('ai-step');const worker=ui.workers.at(-1),options=worker.request.options;
+  expect(options.ruleScript).toContain('history:null');expect(JSON.stringify(worker.request.position.ruleState.data).length).toBeLessThan(10000);
+  const result=chooseAIMove(worker.request.position,{...options,maxDepth:1,maxNodes:1,maxTimeMs:5});
+  worker.onmessage({data:{id:worker.request.id,result}});
+  const saved=JSON.parse(ui.values.get('shogi-game.v1')).game;
+  expect(saved.moves).toHaveLength(84);expect(saved.moves.slice(0,83)).toEqual(record.moves);expect(saved.ruleScript).toContain('history:null');
+  expect(ui.element('#toast').textContent).not.toContain('壊れています');
 }),15000);
 
 test("chess coordinates, side labels and editable appearance use the common game and editor screens",async()=>withUI(async ui=>{
