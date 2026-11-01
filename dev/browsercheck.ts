@@ -65,7 +65,7 @@ export async function checkBrowserStartup(baseURL: string, brokenRuntime = false
     const preset=createChessPreset(), options={passLimit:0,pieceRules:preset.pieceRules,ruleScript:preset.ruleScript};
     const legacy=await import(pathToFileURL(resolve(folder,"src/chesslegacy.js")).href);
     const converted=legacy.importChessText("7k/8/8/8/8/8/R7/K7 w - - 0 1");
-    if(converted.save().version!==9||converted.position.board[48]?.type!=="custom_rook")throw new Error("配信用モジュールで旧形式を共通形式へ変換できませんでした");
+    if(converted.save().version!==11||converted.position.board[48]?.type!=="custom_rook")throw new Error("配信用モジュールで旧形式を共通形式へ変換できませんでした");
     const match = new shogi.ShogiGame(preset.position,options);
     for (const move of [{from:53,to:45},{from:12,to:28},{from:54,to:38},{from:3,to:39}]) match.play({...move,promote:false});
     if (match.result?.reason !== "mate" || match.result.winner !== "gote") throw new Error("共通の実行環境でチェックメイトを判定できませんでした");
@@ -77,7 +77,7 @@ export async function checkBrowserStartup(baseURL: string, brokenRuntime = false
       Object.defineProperty(globalThis,"onmessage",{value:null,writable:true,configurable:true});
       Object.defineProperty(globalThis,"postMessage",{value:(value:any)=>{reply=value;},configurable:true});
       await import(pathToFileURL(resolve(folder, "src/aiworker.js")).href);
-      (globalThis as any).onmessage({data:{id:17,position:aiMatch.position,options:{pieceRules:preset.pieceRules,ruleScript:preset.ruleScript,passesRemaining:{sente:0,gote:0},maxDepth:1,maxNodes:1,maxTimeMs:5}}});
+      await (globalThis as any).onmessage({data:{id:17,position:aiMatch.position,options:{pieceRules:preset.pieceRules,ruleScript:preset.ruleScript,passesRemaining:{sente:0,gote:0},maxDepth:1,maxNodes:1,maxTimeMs:5}}});
     } finally {
       if(onmessage)Object.defineProperty(globalThis,"onmessage",onmessage);else Reflect.deleteProperty(globalThis,"onmessage");
       if(postMessage)Object.defineProperty(globalThis,"postMessage",postMessage);else Reflect.deleteProperty(globalThis,"postMessage");

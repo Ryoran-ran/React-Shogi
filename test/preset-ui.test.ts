@@ -54,7 +54,7 @@ test("Special chess uses the existing piece/code editor, shared saves, test sess
   await click("editor-export-setup");const exported=JSON.parse(await downloads.at(-1).text());expect(exported.kind).toBe("shogi-setup");expect(exported.ruleScript).toContain("checkResult");
   await click("editor-test-start");await click("",{square:"52"});await click("",{square:"36"});expect(element(".record-column").innerHTML).not.toContain("編集したポーン");
   await click("",{square:"52"});await click("",{square:"44"});expect(element(".record-column").innerHTML).toContain("編集したポーン");expect(values.get("shogi-game.v1")).toBe(before);
-  await click("editor-test-back");await click("editor-apply");expect(JSON.parse(values.get("shogi-game.v1")).game.version).toBe(9);
+  await click("editor-test-back");await click("editor-apply");expect(JSON.parse(values.get("shogi-game.v1")).game.version).toBe(11);
   await click("",{square:"52"});await click("",{square:"44"});await change("ai-mode","sente");tickAI();const worker=workers.at(-1);expect(worker.request.options.pieceRules[CHESS_PIECES.p].initialData.doubleStep).toBe(false);
   const result=chooseAIMove(worker.request.position,{...worker.request.options,maxDepth:1,maxNodes:1,maxTimeMs:5});worker.onmessage({data:{id:worker.request.id,result}});expect(ShogiGame.load(JSON.parse(values.get("shogi-game.v1")).game).moveCount).toBe(2);
   await click("to-title");await click("title-workshop");await click("workshop-edit");await click("",{workshopCopy:saved.id});expect(html()).toContain('value="チェスのコピー"');expect(draft().snapshot.rules[added]).toBeDefined();
@@ -70,5 +70,27 @@ test("shared draw-claim controls and legacy imports keep chess in the common gam
   const old=new ChessGame();old.play({from:"e2",to:"e4"});await importFile(JSON.stringify(old.save()));game=ShogiGame.load(JSON.parse(values.get("shogi-game.v1")).game);expect(game.moveCount).toBe(1);expect(game.position.board[36]?.type).toBe(CHESS_PIECES.p);
   await click("to-title");values.set("special-chess.v1",JSON.stringify({version:1,game:old.save()}));await click("title-special");expect(html()).toContain('id="special-import-legacy"');await click("special-import-legacy");
   for(let i=0;i<30&&!html().includes('data-square="0"');i++)await Bun.sleep(10);
-  expect(html()).toContain('data-square="0"');expect(values.get("special-chess.v1")).toBeTruthy();expect(JSON.parse(values.get("shogi-game.v1")).game.version).toBe(9);
+  expect(html()).toContain('data-square="0"');expect(values.get("special-chess.v1")).toBeTruthy();expect(JSON.parse(values.get("shogi-game.v1")).game.version).toBe(11);
+}),15000);
+
+test("chess coordinates, side labels and editable appearance use the common game and editor screens",async()=>withUI(async ui=>{
+  const {click,change,reload,html,draft,values}=ui;
+  await reload();await click("title-special");await click("",{specialPlay:"chess"});
+  expect(html()).toContain("○ 白の手番");expect(html()).toContain("自分：白 / AI：黒");
+  expect(html()).toContain('<div class="file-labels"><span>a</span><span>b</span>');
+  expect(html()).toContain('<div class="rank-labels"><span>8</span><span>7</span>');
+  expect(html().match(/class="piece-icon"/g)).toHaveLength(32);expect(html()).not.toContain('id="pass"');
+  await click("",{square:"52"});await click("",{square:"36"});expect(html()).toContain("e2 → e4");expect(html()).toContain("● 黒の手番");
+  await click("flip");expect(html()).toContain('<div class="file-labels"><span>h</span><span>g</span>');
+  expect(html()).toContain('aria-label="e4 白 ポーン');
+  await click("edit-board");expect(html()).toContain('id="editor-chess-appearance"');
+  await change("editor-board-theme","shogi");expect(draft().snapshot.position.boardTheme).toBeUndefined();
+  const before=draft().snapshot;await click("editor-chess-appearance");expect(draft().snapshot.position.boardTheme).toBe("chess");
+  expect(draft().snapshot.position.board).toEqual(before.position.board);expect(draft().snapshot.script).toBe(before.script);
+  await click("editor-undo");expect(draft().snapshot).toEqual(before);await click("editor-redo");
+  await click("editor-open-piece-settings");await click("",{rulePiece:CHESS_PIECES.n});await click("",{pieceSection:"design"});
+  expect(html()).toContain("白のデザイン");expect(html()).toContain("黒のデザイン");
+  await change("","queen",{designSide:"sente",designField:"icon"});await click("piece-editor-back");await click("editor-apply");
+  const saved=JSON.parse(values.get("shogi-game.v1")).game;
+  expect(saved.pieceRules[CHESS_PIECES.n].design.normal.sente.icon).toBe("queen");expect(saved.pieceRules[CHESS_PIECES.n].design.normal.gote.icon).toBe("knight");
 }),15000);

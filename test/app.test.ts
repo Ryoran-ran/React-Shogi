@@ -1,3 +1,4 @@
+import { mockAIWorkers } from "./mockworker";
 import { expect, test } from "bun:test";
 import { legalMoves } from "../src/shogi";
 import type { AIRequest } from "../src/ai";
@@ -107,23 +108,18 @@ test("two players move, choose promotion, drop captures, undo, and restore a sav
   expect((html().match(/class="hand-count"[^>]*>2<\/span>/g) ?? [])).toHaveLength(2);
 
   const nativeWorker = globalThis.Worker;
-  const workers: MockWorker[] = [];
-  class MockWorker {
-    request!: AIRequest;
-    onmessage: ((event: any) => void) | null = null;
-    onerror: (() => void) | null = null;
-    terminated = false;
-    constructor() { workers.push(this); }
-    postMessage(request: AIRequest) { this.request = structuredClone(request); }
-    terminate() { this.terminated = true; }
-    reply(move: GameMove = legalMoves(this.request.position)[0]) { this.onmessage?.({ data: { id: this.request.id, result: { move, depth: 1, nodes: 1, score: 0 } } }); }
-  }
+  const {Worker:MockWorker, requests:workers, threads} = mockAIWorkers();
+
   Object.assign(globalThis, { Worker: MockWorker });
   try {
     const beforeAI = JSON.parse(stored).game.moves.length;
     await change("ai-mode", "gote"); // Human is gote; AI automatically plays sente.
     await new Promise(resolve => setTimeout(resolve, 300));
     expect(workers).toHaveLength(1); expect(html()).toContain("AI 思考中…");
+    expect(workers[0].request.options.ply).toBe(beforeAI);
+    expect(Number.isInteger(workers[0].request.options.randomSeed)).toBe(true);
+    expect(workers[0].request.options.randomSeed!).toBeGreaterThanOrEqual(0);
+    expect(workers[0].request.options.randomSeed!).toBeLessThanOrEqual(0xffffffff);
     await square(61); expect(JSON.parse(stored).game.moves).toHaveLength(beforeAI);
     workers[0].reply(); expect(JSON.parse(stored).game.moves).toHaveLength(beforeAI + 1);
     await click({}, "undo"); expect(JSON.parse(stored).game.moves).toHaveLength(beforeAI - 1);
@@ -179,8 +175,8 @@ test("two players move, choose promotion, drop captures, undo, and restore a sav
     await click({}, "ai-step");
     await click({ aiAction: "stop" }, "ai-toggle");
     workers[6].onerror?.();
-    expect(element("#toast").textContent).toContain("AI を起動できませんでした");
-    expect(JSON.parse(stored).game.moves).toHaveLength(2);
+    expect(workers[6].terminated).toBe(true);
+    expect(JSON.parse(stored).game.moves).toHaveLength(3);
     expect(html()).not.toContain("停止予約済み");
 
     await change("ai-mode", "sente"); await click({}, "to-title"); await click({}, "title-workshop"); await click({}, "workshop-new"); await click({}, "editor-standard");

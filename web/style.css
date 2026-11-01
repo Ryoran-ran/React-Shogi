@@ -769,3 +769,39 @@ main { grid-template-rows: auto minmax(0, 1fr); }
 .piece-basic-fields .piece-promotion-option { grid-column: 1 / -1; }
 
 .board-arena.no-hands { --stand-width: 0px; --stand-gap: 0px; }
+
+/* A square keeps its own fill while move, selection and check highlights remain visible. */
+.square, .setup-preview-board > span { background-color: var(--square-color, transparent); }
+.square:hover { background-color: var(--square-color, transparent); background-image: linear-gradient(#fff4cd55, #fff4cd55); }
+.square.last-move { background-color: var(--square-color, transparent); background-image: linear-gradient(#f8e5a25c, #f8e5a25c); }
+.square.selected-square { background-color: var(--square-color, transparent); background-image: linear-gradient(#7285524d, #7285524d); box-shadow: inset 0 0 0 2px var(--square-mark, #647d40); }
+.square.king-check { background-color: var(--square-color, transparent); background-image: linear-gradient(#b5463440, #b5463440); }
+.square.editor-last { background-color: var(--square-color, transparent); background-image: linear-gradient(#8ca26833, #8ca26833); }
+.square .move-dot { background: var(--square-mark, #69814899); }
+.square .capture-ring { border-color: var(--square-mark, #647d40); }
+.editor-color-field { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: 11px; margin: 12px 0; }
+.editor-color-field input[type="color"] { width: 80px; height: 34px; padding: 3px; border: 1px solid var(--line); background: #fffefa; border-radius: 5px; }
+.editor-color-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin: 10px 0; }
+.editor-colors > button, .editor-colors details > button { width: 100%; }
+.editor-colors button { padding: 8px; font-size: 10px; }
+.editor-colors details { margin-top: 12px; font-size: 11px; }
+.editor-colors summary { cursor: pointer; }
+
+.square[style*="--square-color"], .setup-preview-board > span[style*="--square-color"] { border-color: var(--square-mark); }
+.square.editor-last { box-shadow: inset 0 0 0 3px var(--square-mark, #627b47); }
+.square.king-check { box-shadow: inset 0 0 0 2px var(--square-mark, #ac6045); }
+
+/* Vector piece silhouettes share the existing design, palette and promotion previews. */
+.piece.piece-shape-chess, .mini-piece.piece-shape-chess { clip-path: none; border-radius: 0; padding: 0; writing-mode: horizontal-tb; filter: drop-shadow(0 2px 1px #182d282b); }
+.piece-shape-chess > .piece-icon { display: block; width: 100%; height: 100%; overflow: visible; }
+.board .piece.piece-shape-chess { width: 78%; height: 92%; }
+.piece-design-preview .piece.piece-shape-chess { width: 80px; height: 100px; }
+.editor-palette .piece.piece-shape-chess { width: 32px; height: 40px; }
+.piece-rule-origin .piece.piece-shape-chess { width: 78%; height: 92%; }
+.setup-preview-board .piece.piece-shape-chess { width: 78%; height: 92%; padding: 0; }
+.board-chess-mark { clip-path: none; border-radius: 8px; font-family: "Segoe UI Symbol", serif; padding-top: 0; }
+.board-theme-chess.board-surround, .board-theme-chess > .board-surround { background: #e7ecdf; border-color: #b8c7ad; box-shadow: 0 8px 24px #2c482118; }
+.board-theme-chess .board { background: #eeeed2; border-color: #4d674c; }
+.board-theme-chess .square, .board-theme-chess > span[style*="--square-color"] { border-color: #758c6e; }
+.board-theme-chess .file-labels, .board-theme-chess .rank-labels { color: #637958; font-family: sans-serif; }
+.piece-design-fields label:has(select[data-design-field="icon"]) { grid-column: 1 / -1; }

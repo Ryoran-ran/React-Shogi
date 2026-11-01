@@ -270,6 +270,8 @@ export function runRuleScript(source: string, position: Position, rules: PieceRu
     if (result.position.width !== position.width || result.position.height !== position.height || result.position.turn !== (move ? position.turn === "sente" ? "gote" : "sente" : position.turn)) throw new Error("ルールが盤面サイズ・手番を不正に変更しました");
     validateRuleState(result.position.ruleState);
     if (JSON.stringify(result.position.settings) !== JSON.stringify(position.settings)) throw new Error("ルールから基本設定は変更できません");
+    if(JSON.stringify(result.position.squareColors)!==JSON.stringify(position.squareColors))throw new Error("ルールから盤面の色は変更できません");
+    if(result.position.boardTheme!==position.boardTheme)throw new Error("ルールから表示スタイルは変更できません");
     const royals = royalTypes(rules), kings = ["sente", "gote"].map(side => result.position!.board.some(piece => piece && royals.includes(piece.type) && piece.side === side));
     if (royals.length && !result.position.ruleState!.result && kings.some(present => !present)) result.position.ruleState!.result = { reason: "script", winner: kings[0] ? "sente" : kings[1] ? "gote" : null };
   }

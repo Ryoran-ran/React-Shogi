@@ -17,9 +17,9 @@ const moves=(game:ShogiGame)=>legalMoves(game.position,game.pieceRules,game.rule
 function play(game:ShogiGame,text:string){const move=moves(game).find(move=>lan(move)===text);if(!move)throw new Error(`Missing ${text}`);game.play(move);}
 
 test("the chess preset is ordinary editor data with six editable definitions and shared-engine saves",()=>{
-  const setup=createChessPreset(),game=fromFen();expect(setup.kind).toBe('shogi-setup');expect(setup.version).toBe(7);expect(game.position.board.filter(Boolean)).toHaveLength(32);expect(moves(game)).toHaveLength(20);
+  const setup=createChessPreset(),game=fromFen();expect(setup.kind).toBe('shogi-setup');expect(setup.version).toBe(9);expect(game.position.board.filter(Boolean)).toHaveLength(32);expect(moves(game)).toHaveLength(20);
   expect(Object.keys(setup.pieceRules!).filter(type=>type.startsWith('custom_'))).toHaveLength(6);expect(loadSetup(setup)).toEqual(setup);expect(copySetup(setup).pieceRules).toEqual(setup.pieceRules);
-  play(game,'e2e4');expect(game.position.board[36]?.type).toBe(CHESS_PIECES.p);expect(ShogiGame.load(game.save()).position).toEqual(game.position);expect(game.save().version).toBe(9);
+  play(game,'e2e4');expect(game.position.board[36]?.type).toBe(CHESS_PIECES.p);expect(ShogiGame.load(game.save()).position).toEqual(game.position);expect(game.save().version).toBe(11);
 });
 test("shared movement and piece scripts reproduce standard legal moves through opening play",()=>{
   const game=fromFen(),oracle=new Chess();

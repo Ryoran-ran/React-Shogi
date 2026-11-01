@@ -64,7 +64,7 @@ test("added pieces can be promoted, captured, dropped, evaluated by AI and resto
   try {
     const reply = await new Promise<AIReply>((resolve, reject) => {
       timeout = setTimeout(() => reject(new Error("Custom-piece AI worker timed out")), 4000);
-      worker.onmessage = event => resolve(event.data as AIReply); worker.onerror = () => reject(new Error("Custom-piece AI worker failed"));
+      worker.onmessage = event => { const reply=event.data as AIReply; if (!("result" in reply) || !reply.progress) resolve(reply); }; worker.onerror = () => reject(new Error("Custom-piece AI worker failed"));
       worker.postMessage({ id: 92, position: p, options: { pieceRules: rules, maxDepth: 1, maxNodes: 1000, maxTimeMs: 5000 } });
     });
     expect(reply.id).toBe(92); expect("result" in reply).toBe(true);

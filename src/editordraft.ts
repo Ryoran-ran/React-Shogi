@@ -11,7 +11,7 @@ export interface EditorDraft {
   meta: { name: string; passLimitText: string; loadedId: string | null; returnTo: "game" | "workshop" | "special" };
   pieceDraft?: PieceEditorDraft;
   codeDraft?: { source: string; piece?: PieceType };
-  ui?: { tool: "place" | "select" | "move" | "copy"; square: number; dataText: string | null };
+  ui?: { tool: "place" | "select" | "move" | "copy" | "color"; square: number; dataText: string | null; color?: string; secondaryColor?: string; eraseColor?: boolean };
 }
 type DraftStorage = Pick<Storage, "getItem" | "setItem" | "removeItem">;
 export function readEditorDraft(storage: DraftStorage): EditorDraft | null {
@@ -25,7 +25,7 @@ export function readEditorDraft(storage: DraftStorage): EditorDraft | null {
     draft.codeDraft.source = loadRuleScript(draft.codeDraft.source);
     if (draft.codeDraft.piece && (!draft.pieceDraft || draft.pieceDraft.piece !== draft.codeDraft.piece || !pieceTypes(draft.pieceDraft.rules).includes(draft.codeDraft.piece))) throw new Error("駒コードの下書きが壊れています");
   }
-  if (draft.ui && (!["place","select","move","copy"].includes(draft.ui.tool) || !Number.isInteger(draft.ui.square) || draft.ui.square < -1 || draft.ui.square >= draft.snapshot.position.board.length || (draft.ui.dataText !== null && (typeof draft.ui.dataText !== "string" || draft.ui.dataText.length > 30000)))) throw new Error("配置編集の下書きが壊れています");
+  if (draft.ui && (!["place","select","move","copy","color"].includes(draft.ui.tool) || !Number.isInteger(draft.ui.square) || draft.ui.square < -1 || draft.ui.square >= draft.snapshot.position.board.length || (draft.ui.dataText !== null && (typeof draft.ui.dataText !== "string" || draft.ui.dataText.length > 30000)) || [draft.ui.color,draft.ui.secondaryColor].some(color=>color!==undefined&&(typeof color!=="string"||!/^#[0-9a-f]{6}$/i.test(color))) || draft.ui.eraseColor!==undefined&&typeof draft.ui.eraseColor!=="boolean")) throw new Error("配置編集の下書きが壊れています");
   return structuredClone(draft);
 }
 export function saveEditorDraft(storage: DraftStorage, draft: EditorDraft): void {

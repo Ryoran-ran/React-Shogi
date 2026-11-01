@@ -1,3 +1,4 @@
+import { mockAIWorkers } from "./mockworker";
 import { expect, test } from "bun:test";
 import { ShogiGame, emptyPosition, legalMoves } from "../src/shogi";
 import { createSetup, readLocalSetups, saveLocalSetup, SETUP_STORAGE_KEY } from "../src/setups";
@@ -16,17 +17,8 @@ test("title opens standard shogi, the workshop and Special without running AI in
   const p = emptyPosition(5, 7); p.board[34] = { type: "K", side: "sente", promoted: false }; p.board[0] = { type: "K", side: "gote", promoted: false };
   const ready = saveLocalSetup(storage, createSetup(p, 1, "小さな対局"));
   const draft = saveLocalSetup(storage, createSetup(emptyPosition(3, 5), null, "作成中の配置"));
-  const workers: MockWorker[] = [];
-  class MockWorker {
-    request!: AIRequest;
-    onmessage: ((event: any) => void) | null = null;
-    onerror: (() => void) | null = null;
-    terminated = false;
-    constructor() { workers.push(this); }
-    postMessage(request: AIRequest) { this.request = structuredClone(request); }
-    terminate() { this.terminated = true; }
-    reply(move: GameMove = legalMoves(this.request.position)[0]) { this.onmessage?.({ data: { id: this.request.id, result: { move, depth: 1, nodes: 1, score: 0 } } }); }
-  }
+  const {Worker:MockWorker, requests:workers, threads} = mockAIWorkers();
+
   const element = (selector: string) => {
     if (!elements.has(selector)) elements.set(selector, { innerHTML: "", textContent: "", value: "", classList: { add() {}, remove() {} }, focus() {}, click() {}, scrollTop: 0, scrollHeight: 0 });
     return elements.get(selector);

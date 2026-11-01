@@ -1,3 +1,5 @@
+import { PIECE_ICONS } from "./pieceicons";
+import type { PieceIcon } from "./pieceicons";
 import { loadRuleScript, validateScriptData } from "./scriptconfig";
 import type { ScriptData } from "./scriptconfig";
 
@@ -129,7 +131,7 @@ export type PieceType = BuiltinPieceType | CustomPieceType;
 export type HandType = PieceType;
 export type PieceAction = "moves" | "captures";
 export type PieceActions = Pick<PieceStateDefinition, PieceAction> & { readonly separateCapture?: true };
-export interface PieceDesign { readonly text: string; readonly fill: string; readonly color: string; readonly shape: "shogi" | "circle" | "square"; readonly upright?: boolean }
+export interface PieceDesign { readonly text: string; readonly fill: string; readonly color: string; readonly shape: "shogi" | "circle" | "square" | "chess"; readonly icon?: PieceIcon; readonly upright?: boolean }
 export type DesignSide = "sente" | "gote";
 export interface PieceRuleEntry {
   readonly aiTable?: readonly (readonly number[])[];
@@ -240,8 +242,8 @@ function loadCustomDefinition(data: unknown): PieceDefinition {
 }
 function loadDesign(data: unknown): PieceDesign {
   const raw = ruleRecord(data);
-  if (Object.keys(raw).some(key => !["text", "fill", "color", "shape", "upright"].includes(key)) || typeof raw.fill !== "string" || !/^#[0-9a-f]{6}$/i.test(raw.fill) || typeof raw.color !== "string" || !/^#[0-9a-f]{6}$/i.test(raw.color) || !["shogi", "circle", "square"].includes(raw.shape as string) || raw.upright!==undefined&&typeof raw.upright!=="boolean") throw new Error("駒のデザインが壊れています");
-  return { text: shortText(raw.text, 6, true), fill: raw.fill.toLowerCase(), color: raw.color.toLowerCase(), shape: raw.shape as PieceDesign["shape"], ...(raw.upright ? {upright:true} : {}) };
+  if (Object.keys(raw).some(key => !["text", "fill", "color", "shape", "upright", "icon"].includes(key)) || typeof raw.fill !== "string" || !/^#[0-9a-f]{6}$/i.test(raw.fill) || typeof raw.color !== "string" || !/^#[0-9a-f]{6}$/i.test(raw.color) || !["shogi", "circle", "square", "chess"].includes(raw.shape as string) || raw.icon!==undefined&&!PIECE_ICONS.includes(raw.icon as PieceIcon) || raw.upright!==undefined&&typeof raw.upright!=="boolean") throw new Error("駒のデザインが壊れています");
+  return { text: shortText(raw.text, 6, true), fill: raw.fill.toLowerCase(), color: raw.color.toLowerCase(), shape: raw.shape as PieceDesign["shape"], ...(raw.upright ? {upright:true} : {}), ...(raw.icon!==undefined ? {icon:raw.icon as PieceIcon} : {}) };
 }
 export function defaultPieceDesign(piece: { type: PieceType; promoted: boolean; side: DesignSide }, rules?: PieceRules): PieceDesign {
   const state = pieceState(piece, rules);
@@ -255,6 +257,7 @@ export function hasPieceLibrary(rules?: PieceRules): boolean { return Object.val
 export function hasPieceScripts(rules?: PieceRules): boolean { return Object.values(rules ?? {}).some(entry => !!entry?.script); }
 export function hasPieceProperties(rules?: PieceRules): boolean { return Object.values(rules ?? {}).some(entry => entry?.royal !== undefined || !!entry?.initialData); }
 export function hasExtendedPieceRules(rules?:PieceRules):boolean{return Object.values(rules??{}).some(entry=>!!entry?.aiTable||Object.values(entry?.design??{}).some(state=>Object.values(state??{}).some(design=>design?.upright)));}
+export function hasPieceIcons(rules?:PieceRules):boolean{return Object.values(rules??{}).some(entry=>Object.values(entry?.design??{}).some(state=>Object.values(state??{}).some(design=>design?.shape==="chess"||design?.icon!==undefined)));}
 export function hasRuleScripts(source: string | undefined, rules?: PieceRules): boolean { return !!source || hasPieceScripts(rules); }
 
 /** Validate imported definitions, actions and designs; omit unchanged built-in settings. */

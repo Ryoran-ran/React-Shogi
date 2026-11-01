@@ -1,4 +1,6 @@
-import { HAND_TYPES, canPromote, pieceState, loadPieceRules, pieceDefinition, pieceTypes, handTypes, isBuiltinPiece, hasPieceLibrary, hasPieceScripts, hasRuleScripts, isRoyal, royalTypes, hasPieceProperties, withInitialData, hasExtendedPieceRules } from "./pieces";
+import { validateSquareColors } from "./boarddesign";
+import type { SquareColors, BoardTheme } from "./boarddesign";
+import { HAND_TYPES, canPromote, pieceState, loadPieceRules, pieceDefinition, pieceTypes, handTypes, isBuiltinPiece, hasPieceLibrary, hasPieceScripts, hasRuleScripts, isRoyal, royalTypes, hasPieceProperties, withInitialData, hasExtendedPieceRules, hasPieceIcons } from "./pieces";
 import { boardSettings, loadBoardSettings, hasExtendedBoardSettings } from "./boardsettings";
 import type { BoardSettings } from "./boardsettings";
 import type { PieceType, HandType, PieceRules } from "./pieces";
@@ -10,7 +12,7 @@ export type { PieceType, HandType } from "./pieces";
 
 export type Side = "sente" | "gote";
 export interface Piece { type: PieceType; side: Side; promoted: boolean; data?: ScriptData }
-export interface Position { width: number; height: number; board: Array<Piece | null>; hands: Record<Side, Record<HandType, number>>; turn: Side; ruleState?: RuleState; settings?: BoardSettings }
+export interface Position { width: number; height: number; board: Array<Piece | null>; hands: Record<Side, Record<HandType, number>>; turn: Side; ruleState?: RuleState; settings?: BoardSettings; squareColors?: SquareColors; boardTheme?: BoardTheme }
 export interface Move { from?: number; drop?: HandType; to: number; promote: boolean; choices?: string[] }
 export interface PassMove { pass: true; choices?: string[] }
 export type GameMove = Move | PassMove;
@@ -19,7 +21,7 @@ export interface GameOptions { passLimit?: number | null; pieceRules?: PieceRule
 export interface Result { reason: "mate" | "noMoves" | "repetition" | "perpetualCheck" | "resign" | "agreement" | "script" | "claim"; winner: Side | null }
 export interface MoveRecord { move: GameMove; side: Side; notation: string; check: boolean; effects?: string[]; trace?: RuleTrace[] }
 interface Frame { position: Position; record: MoveRecord | null; result: Result | null; passesUsed: Record<Side, number>; claimMove?:GameMove }
-export interface SavedGame { version: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9; moves: GameMove[]; passLimit?: number | null; initialPosition?: Position; pieceRules?: PieceRules; ruleScript?: string; ending?: "resign" | "agreement" | "claim"; claimMove?:GameMove }
+export interface SavedGame { version: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11; moves: GameMove[]; passLimit?: number | null; initialPosition?: Position; pieceRules?: PieceRules; ruleScript?: string; ending?: "resign" | "agreement" | "claim"; claimMove?:GameMove }
 export const isPassMove = (move: GameMove): move is PassMove => "pass" in move && move.pass === true;
 export const SIDE_NAMES = { sente: "先手", gote: "後手" };
 export const MIN_BOARD_SIZE = 3, MAX_BOARD_SIZE = 15;
@@ -50,6 +52,8 @@ export function validatePosition(data: unknown, rules?: PieceRules): asserts dat
   if (p.settings !== undefined) loadBoardSettings(p.settings);
   validateBoardSize(p.width, p.height);
   if (!Array.isArray(p.board) || p.board.length !== p.width * p.height || !["sente", "gote"].includes(p.turn)) throw new Error("盤面の設定が壊れています");
+  if(p.boardTheme!==undefined&&p.boardTheme!=="chess")throw new Error("盤面の表示スタイルが壊れています");
+  validateSquareColors(p.squareColors, p.width * p.height);
   const types = pieceTypes(rules), handPieces = handTypes(rules);
   for (const piece of p.board) {
     if (piece === null) continue;
@@ -107,13 +111,13 @@ export function royalResult(position: Position, rules?: PieceRules): Result | nu
   return present.every(Boolean) ? null : { reason: "script", winner: present[0] ? "sente" : present[1] ? "gote" : null };
 }
 /** A script can defer a draw so an immediate mate still wins. */
-export function ruleResult(position:Position,rules:PieceRules={},script="",remaining?:PassAllowance):Result|null {
+export function ruleResult(position:Position,rules:PieceRules={},script="",remaining?:PassAllowance,checkBudget?:()=>void):Result|null {
   if(!hasRuleScripts(script,rules)||!position.ruleState?.result)return null;
   if(!position.ruleState.drawUnlessMate)return position.ruleState.result;
   const royal=royalResult(position,rules);if(royal)return royal;
   if(inCheck(position,position.turn,rules)) {
     const probe=clone(position);delete probe.ruleState!.result;delete probe.ruleState!.drawUnlessMate;
-    if(legalActionIterator(probe,remaining,rules,script).next().done)return {reason:"mate",winner:opposite(position.turn)};
+    if(legalActionIterator(probe,remaining,rules,script,checkBudget).next().done)return {reason:"mate",winner:opposite(position.turn)};
   }
   return position.ruleState.result;
 }
@@ -136,12 +140,15 @@ export function positionAfterLegalMove(position: Position, move: GameMove, rules
   validatePosition(outcome.position, rules); return outcome.position;
 }
 export function ruleChoiceForMove(position: Position, move: GameMove, rules: PieceRules, ruleScript: string): RuleChoice | undefined { return runRuleScript(ruleScript, position, rules, move).choice; }
-function* expandedMoves<T extends GameMove>(position: Position, move: T, rules: PieceRules = {}, ruleScript = ""): Generator<{ move: T; next: Position }> {
+function* expandedMoves<T extends GameMove>(position: Position, move: T, rules: PieceRules = {}, ruleScript = "", checkBudget?:()=>void): Generator<{ move: T; next: Position }> {
+  checkBudget?.();
   if (!hasRuleScripts(ruleScript, rules)) { yield { move, next: applyUnchecked(position, move, rules) }; return; }
   let branches = 0;
   function* expand(candidate: T): Generator<{ move: T; next: Position }> {
+    checkBudget?.();
     if (++branches > 128) throw new Error("1手のルール選択の組み合わせが多すぎます");
     const outcome = runRuleScript(ruleScript, position, rules, candidate);
+    checkBudget?.();
     if (outcome.rejected) return;
     if (outcome.choice) {
       for (const option of outcome.choice.options) yield* expand({ ...candidate, choices: [...(candidate.choices ?? []), option.value] });
@@ -149,35 +156,38 @@ function* expandedMoves<T extends GameMove>(position: Position, move: T, rules: 
   }
   yield* expand(move);
 }
-function* boardMoves(position: Position, rules?: PieceRules, ruleScript = ""): Generator<Move> {
+function* boardMoves(position: Position, rules?: PieceRules, ruleScript = "", checkBudget?:()=>void): Generator<Move> {
   for (let from = 0; from < position.board.length; from++) {
+    checkBudget?.();
     const p = position.board[from]; if (!p || p.side !== position.turn) continue;
     for (const to of pieceDestinations(position, from, pieceState(p, rules))) {
       const target = position.board[to]; if (target && (target.side === p.side || (isRoyal(target.type, rules) && boardSettings(position).selfCheck))) continue;
       const y = Math.floor(to / position.width), promotion = !p.promoted && canPromote(p.type, rules) && (zone(position, p.side, Math.floor(from / position.width)) || zone(position, p.side, y));
       for (const promote of promotion ? forcedPromotion(position, p, y, rules) ? [true] : [false, true] : [false]) {
-        for (const { move, next } of expandedMoves(position, { from, to, promote }, rules, ruleScript)) if ((hasRuleScripts(ruleScript, rules) && next.ruleState?.result && !next.ruleState.drawUnlessMate) || royalResult(next, rules) || !inCheck(next, p.side, rules)) yield move;
+        for (const { move, next } of expandedMoves(position, { from, to, promote }, rules, ruleScript, checkBudget)) if ((hasRuleScripts(ruleScript, rules) && next.ruleState?.result && !next.ruleState.drawUnlessMate) || royalResult(next, rules) || !inCheck(next, p.side, rules)) yield move;
       }
     }
   }
 }
-export function* legalMoveIterator(position: Position, rules?: PieceRules, ruleScript = ""): Generator<Move> {
+export function* legalMoveIterator(position: Position, rules?: PieceRules, ruleScript = "", checkBudget?:()=>void): Generator<Move> {
+  checkBudget?.();
   if (hasRuleScripts(ruleScript, rules) && position.ruleState?.result) return;
   if (royalResult(position, rules)) return;
-  yield* boardMoves(position, rules, ruleScript);
+  yield* boardMoves(position, rules, ruleScript, checkBudget);
   if (!boardSettings(position).useHands) return;
   const side = position.turn;
   for (const drop of handTypes(rules)) {
     if (isRoyal(drop, rules)) continue;
     if (!position.hands[side][drop]) continue;
     for (let to = 0; to < position.board.length; to++) {
+      checkBudget?.();
       if (position.board[to]) continue;
       const x = to % position.width, y = Math.floor(to / position.width), p: Piece = { type: drop, side, promoted: false };
       if (forcedPromotion(position, p, y, rules)) continue;
       if (boardSettings(position).nifu && drop === "P" && position.board.some((piece, i) => i % position.width === x && piece?.side === side && piece.type === "P" && !piece.promoted)) continue;
-      for (const { move, next } of expandedMoves<Move>(position, { drop, to, promote: false }, rules, ruleScript)) {
+      for (const { move, next } of expandedMoves<Move>(position, { drop, to, promote: false }, rules, ruleScript, checkBudget)) {
         if (!(hasRuleScripts(ruleScript, rules) && next.ruleState?.result && !next.ruleState.drawUnlessMate) && inCheck(next, side, rules)) continue;
-        if (boardSettings(position).selfCheck && boardSettings(position).pawnDropMate && !(hasRuleScripts(ruleScript, rules) && next.ruleState?.result && !next.ruleState.drawUnlessMate) && drop === "P" && attacks(next, to, rules).some(i => next.board[i] && isRoyal(next.board[i]!.type, rules) && next.board[i]?.side === next.turn) && legalMoveIterator(next, rules, ruleScript).next().done) continue;
+        if (boardSettings(position).selfCheck && boardSettings(position).pawnDropMate && !(hasRuleScripts(ruleScript, rules) && next.ruleState?.result && !next.ruleState.drawUnlessMate) && drop === "P" && attacks(next, to, rules).some(i => next.board[i] && isRoyal(next.board[i]!.type, rules) && next.board[i]?.side === next.turn) && legalMoveIterator(next, rules, ruleScript, checkBudget).next().done) continue;
         yield move;
       }
     }
@@ -187,11 +197,12 @@ export const legalMoves = (position: Position, rules?: PieceRules, ruleScript = 
 export function canPass(position: Position, remaining: PassAllowance, rules?: PieceRules): boolean {
   return (remaining[position.turn] === null || remaining[position.turn]! > 0) && !inCheck(position, position.turn, rules);
 }
-export function* legalActionIterator(position: Position, remaining?: PassAllowance, rules?: PieceRules, ruleScript = ""): Generator<GameMove> {
+export function* legalActionIterator(position: Position, remaining?: PassAllowance, rules?: PieceRules, ruleScript = "", checkBudget?:()=>void): Generator<GameMove> {
+  checkBudget?.();
   if (royalResult(position, rules)) return;
   if (hasRuleScripts(ruleScript, rules) && position.ruleState?.result) return;
-  yield* legalMoveIterator(position, rules, ruleScript);
-  if (remaining && canPass(position, remaining, rules)) for (const { move, next } of expandedMoves<PassMove>(position, { pass: true }, rules, ruleScript)) if ((hasRuleScripts(ruleScript, rules) && next.ruleState?.result && !next.ruleState.drawUnlessMate) || !inCheck(next, position.turn, rules)) yield move;
+  yield* legalMoveIterator(position, rules, ruleScript, checkBudget);
+  if (remaining && canPass(position, remaining, rules)) for (const { move, next } of expandedMoves<PassMove>(position, { pass: true }, rules, ruleScript, checkBudget)) if ((hasRuleScripts(ruleScript, rules) && next.ruleState?.result && !next.ruleState.drawUnlessMate) || !inCheck(next, position.turn, rules)) yield move;
 }
 export function positionKey(position: Position, remaining?: PassAllowance): string {
   const passKey = remaining && (remaining.sente !== null || remaining.gote !== null) ? `|pass:${remaining.sente ?? "-"},${remaining.gote ?? "-"}` : "";
@@ -317,13 +328,15 @@ export class ShogiGame {
   }
   resign(): void { if (!this.result) this.frames.at(-1)!.result = { reason: "resign", winner: opposite(this.position.turn) }; }
   agreeDraw(): void { if (!this.result) this.frames.at(-1)!.result = { reason: "agreement", winner: null }; }
-  save(): SavedGame { const reason = this.result?.reason, custom = Object.keys(this.configuredPieceRules).length > 0; return { version: reason==="claim"||hasExtendedBoardSettings(this.initialPosition)||hasExtendedPieceRules(this.configuredPieceRules)?9:this.initialPosition.settings || hasPieceProperties(this.configuredPieceRules) ? 8 : hasPieceScripts(this.configuredPieceRules) ? 7 : this.ruleScript ? 6 : hasPieceLibrary(this.configuredPieceRules) ? 5 : custom ? 4 : 3, initialPosition: this.initialPosition, passLimit: this.passLimit, ...(custom || this.ruleScript || this.initialPosition.settings ? { pieceRules: this.pieceRules } : {}), ...(this.ruleScript ? { ruleScript: this.ruleScript } : {}), moves: this.records.map(r => r.move), ...((reason === "resign" || reason === "agreement" || reason==="claim") ? { ending: reason } : {}), ...(reason==="claim"&&this.frames.at(-1)!.claimMove?{claimMove:clone(this.frames.at(-1)!.claimMove)}:{}) }; }
+  save(): SavedGame { const reason = this.result?.reason, custom = Object.keys(this.configuredPieceRules).length > 0; return { version: this.initialPosition.boardTheme||hasPieceIcons(this.configuredPieceRules)?11:this.initialPosition.squareColors ? 10 : reason==="claim"||hasExtendedBoardSettings(this.initialPosition)||hasExtendedPieceRules(this.configuredPieceRules)?9:this.initialPosition.settings || hasPieceProperties(this.configuredPieceRules) ? 8 : hasPieceScripts(this.configuredPieceRules) ? 7 : this.ruleScript ? 6 : hasPieceLibrary(this.configuredPieceRules) ? 5 : custom ? 4 : 3, initialPosition: this.initialPosition, passLimit: this.passLimit, ...(custom || this.ruleScript || this.initialPosition.settings || this.initialPosition.squareColors || this.initialPosition.boardTheme ? { pieceRules: this.pieceRules } : {}), ...(this.ruleScript ? { ruleScript: this.ruleScript } : {}), moves: this.records.map(r => r.move), ...((reason === "resign" || reason === "agreement" || reason==="claim") ? { ending: reason } : {}), ...(reason==="claim"&&this.frames.at(-1)!.claimMove?{claimMove:clone(this.frames.at(-1)!.claimMove)}:{}) }; }
   static load(data: unknown): ShogiGame {
     if (!data || typeof data !== "object") throw new Error("将棋の保存データではありません");
     const d = data as SavedGame;
-    if (![1, 2, 3, 4, 5, 6, 7, 8, 9].includes(d.version) || !Array.isArray(d.moves) || d.moves.length > 1024 || (d.ending !== undefined && !["resign", "agreement", "claim"].includes(d.ending)) || (d.version < 6 && d.ruleScript !== undefined) || (d.version === 6 && !d.ruleScript) || d.ending==="claim"&&d.version<9 || d.claimMove!==undefined&&(d.ending!=="claim"||d.version<9)) throw new Error("対応していない保存データです");
+    if (![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11].includes(d.version) || !Array.isArray(d.moves) || d.moves.length > 1024 || (d.ending !== undefined && !["resign", "agreement", "claim"].includes(d.ending)) || (d.version < 6 && d.ruleScript !== undefined) || (d.version === 6 && !d.ruleScript) || d.ending==="claim"&&d.version<9 || d.claimMove!==undefined&&(d.ending!=="claim"||d.version<9)) throw new Error("対応していない保存データです");
     if ((d.version >= 4 && d.pieceRules === undefined) || (d.version < 4 && d.pieceRules !== undefined)) throw new Error("駒の動きの保存形式が壊れています");
+    if(d.version<10&&d.initialPosition?.squareColors!==undefined)throw new Error("盤面の色の保存形式が壊れています");
     const pieceRules = loadPieceRules(d.pieceRules);
+    if(d.version<11&&(d.initialPosition?.boardTheme!==undefined||hasPieceIcons(pieceRules)))throw new Error("駒や盤面の表示の保存形式が壊れています");
     if(d.version<9&&(hasExtendedBoardSettings(d.initialPosition??initialPosition())||hasExtendedPieceRules(pieceRules)))throw new Error("追加の勝敗条件・駒の設定の保存形式が壊れています");
     if (d.version < 8 && (d.initialPosition?.settings !== undefined || hasPieceProperties(pieceRules))) throw new Error("基本ルール・駒の属性の保存形式が壊れています");
     if (d.version < 7 && hasPieceScripts(pieceRules)) throw new Error("駒のルールコードの保存形式が壊れています");
