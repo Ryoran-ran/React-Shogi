@@ -209,7 +209,7 @@ function requestAIMove(): void {
     };
     // Finish with a legal move; a slow or silent worker never gates play.
     aiWatchdog=setTimeout(()=>finish(candidate,performance.now()-aiWorkerLastMessage>5000),aiStrength==="fast"?350:1000);
-    const request:AIRequest={id,position,options:{maxDepth:aiStrength==="fast"?2:3,maxNodes:aiStrength==="fast"?1600:8000,maxTimeMs:aiStrength==="fast"?180:700,randomSeed:crypto.getRandomValues(new Uint32Array(1))[0],ply:game.moveCount,previousPositions:game.positionHistory,passesRemaining:game.passesRemaining,pieceRules:rules,ruleScript:script}};
+    const request:AIRequest={id,position,options:{maxDepth:aiStrength==="fast"?2:3,maxNodes:aiStrength==="fast"?1600:8000,maxTimeMs:aiStrength==="fast"?180:700,randomSeed:crypto.getRandomValues(new Uint32Array(1))[0],ply:game.moveCount,previousPositions:game.positionHistory,recentMoves:game.records.slice(-12).map(record=>record.move),passesRemaining:game.passesRemaining,pieceRules:rules,ruleScript:script}};
     worker.postMessage(request);
   } catch {
     // Worker construction can fail too. The locally verified move still proceeds.
@@ -344,7 +344,11 @@ function openSpecial(): void {
   setScreen("special"); render(); $(".special-heading h1").focus();
 }
 async function openSpecialGame(action: "play" | "edit",id="chess"): Promise<void> {
-  const version=screenVersion;const setup=id==="othello"?(await import("../src/othellopreset.js")).createOthelloPreset():id==="shogi-chess"?createShogiChessPreset():createChessPreset();if(version!==screenVersion)return;assertSpecialEditorAllowed(getSpecialGame(id),setup);
+  const version=screenVersion;
+  const setup=id==="hasami"?(await import("../src/hasamipreset.js")).createHasamiPreset()
+    :id==="othello"?(await import("../src/othellopreset.js")).createOthelloPreset()
+    :id==="shogi-chess"?createShogiChessPreset():createChessPreset();
+  if(version!==screenVersion)return;assertSpecialEditorAllowed(getSpecialGame(id),setup);
   if(action==="edit")openEditor(setup,"special");else startMatch(setup,"custom");
 }
 function hasLegacyChess(): boolean { try { return localStorage.getItem("special-chess.v1") !== null; } catch { return false; } }

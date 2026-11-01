@@ -117,6 +117,7 @@ test("two players move, choose promotion, drop captures, undo, and restore a sav
     await new Promise(resolve => setTimeout(resolve, 300));
     expect(workers).toHaveLength(1); expect(html()).toContain("AI 思考中…");
     expect(workers[0].request.options.ply).toBe(beforeAI);
+    expect(workers[0].request.options.recentMoves).toEqual(JSON.parse(stored).game.moves.slice(-12));
     expect(Number.isInteger(workers[0].request.options.randomSeed)).toBe(true);
     expect(workers[0].request.options.randomSeed!).toBeGreaterThanOrEqual(0);
     expect(workers[0].request.options.randomSeed!).toBeLessThanOrEqual(0xffffffff);

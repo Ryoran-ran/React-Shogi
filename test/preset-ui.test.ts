@@ -10,6 +10,7 @@ import { EDITOR_DRAFT_KEY } from "../src/editordraft";
 import { readLocalSetups, saveLocalSetup } from "../src/setups";
 import {quietHistoryFixture} from "./historyfixture";
 import {OTHELLO_STONE} from "../src/othellopreset";
+import {createHasamiPreset,HASAMI_PIECE} from "../src/hasamipreset";
 
 async function withUI(run:(ui:any)=>Promise<void>) {
   const url=new URL("../web/app.ts",import.meta.url);
@@ -35,6 +36,28 @@ async function withUI(run:(ui:any)=>Promise<void>) {
   try {await run({values,storage,element,downloads,workers,click,input,change,reload,html:()=>element("#app").innerHTML as string,draft:()=>JSON.parse(values.get(EDITOR_DRAFT_KEY)!),tickAI:()=>{const entry=[...timers].find(([,t])=>t.delay===250);expect(entry).toBeDefined();timers.delete(entry![0]);entry![1].callback();},importFile:(text:string)=>listeners.change({target:{id:"file-input",files:[{text:async()=>text}],value:""}})});}
   finally {Object.assign(URL,urls);Object.assign(globalThis,original);}
 }
+
+test('Hasami uses shared piece/code editing, draft recovery, saves, test play, AI and capture rendering',async()=>withUI(async ui=>{
+  const {click,input,change,reload,html,draft,values,storage,downloads,tickAI,workers}=ui;
+  await reload();await click('title-special');await click('',{specialEdit:'hasami'});
+  expect(html()).toContain('value="はさみ将棋"');expect(draft().snapshot.position.width).toBe(9);expect(draft().snapshot.rules[HASAMI_PIECE].definition.captures).toEqual([]);
+  await click('editor-open-script');expect(html()).toContain('WIN_CAPTURE_COUNT = 5');
+  const source=draft().snapshot.script.replace('const WIN_CAPTURE_COUNT = 5','const WIN_CAPTURE_COUNT = 2');input('rule-script-source',source);await click('script-editor-back');expect(draft().snapshot.script).toContain('WIN_CAPTURE_COUNT = 2');
+  await reload();await click('editor-restore-draft');expect(draft().snapshot.script).toContain('WIN_CAPTURE_COUNT = 2');
+  await click('editor-open-piece-settings');await click('',{rulePiece:HASAMI_PIECE});await click('',{pieceSection:'design'});expect(html()).toContain('value="歩"');expect(html()).toContain('value="と"');await click('piece-editor-back');
+  await click('editor-save-local');const saved=readLocalSetups(storage).find(entry=>entry.setup.name==='はさみ将棋')!;expect(saved.setup.ruleScript).toBe(source);
+  await click('editor-export-setup');const exported=JSON.parse(await downloads.at(-1).text());expect(exported.kind).toBe('shogi-setup');expect(exported.pieceRules[HASAMI_PIECE].definition.moves).toHaveLength(4);
+  const before=values.get('shogi-game.v1');await click('editor-test-start');await click('',{square:'72'});await click('',{square:'63'});expect(values.get('shogi-game.v1')).toBe(before);await click('editor-test-back');await click('editor-apply');
+  expect(html().match(/data-square=/g)).toHaveLength(81);expect(html()).not.toContain('data-player="sente"');expect(html()).toContain('id="pass" disabled');
+  await click('',{square:'72'});await click('',{square:'63'});await change('ai-mode','sente');tickAI();const worker=workers.at(-1);expect(worker.request.options.ruleScript).toBe(source);
+  const result=chooseAIMove(worker.request.position,{...worker.request.options,maxDepth:1,maxNodes:1,maxTimeMs:5});worker.onmessage({data:{id:worker.request.id,result}});expect(JSON.parse(values.get('shogi-game.v1')).game.moves).toHaveLength(2);
+  await change('ai-mode','human');await click('to-title');await reload();await click('title-continue');expect(JSON.parse(values.get('shogi-game.v1')).game.moves).toHaveLength(2);
+  const setup=createHasamiPreset();setup.position.board.fill(null);for(const i of [18,1,8])setup.position.board[i]={type:HASAMI_PIECE,side:'sente',promoted:false};for(const i of [0,80])setup.position.board[i]={type:HASAMI_PIECE,side:'gote',promoted:false};
+  const game=new ShogiGame(setup.position,{pieceRules:setup.pieceRules,ruleScript:setup.ruleScript,passLimit:0});await ui.importFile(JSON.stringify(game.save()));await click('',{square:'18'});await click('',{square:'9'});
+  const captured=ShogiGame.load(JSON.parse(values.get('shogi-game.v1')).game);expect(captured.position.board[0]).toBeNull();expect(captured.position.ruleState?.data.captured).toEqual({sente:1,gote:0});expect(html()).toContain('data-piece-count="gote"');
+  await click('undo');expect(ShogiGame.load(JSON.parse(values.get('shogi-game.v1')).game).position.board[0]?.side).toBe('gote');
+  await click('to-title');await click('title-special');await click('',{specialPlay:'hasami'});expect(html()).toContain('はさみ将棋');expect(ShogiGame.load(JSON.parse(values.get('shogi-game.v1')).game).position.board.filter(Boolean)).toHaveLength(18);
+}),15000);
 
 test('Othello uses direct placement, shared editing, local/JSON saves, undo, reload and the common AI',async()=>withUI(async ui=>{
   const {click,change,reload,html,draft,values,downloads,storage,tickAI,workers}=ui;

@@ -36,6 +36,11 @@ export const SPECIAL_GAMES: readonly SpecialGameDefinition[] = Object.freeze([
     description:"8×8盤で石を置き、相手の石をはさんで反転します。駒・配置・反転・パス・勝敗を共通エディターの設定とルールコードで作った作例です。",
     editor:Object.freeze({policy:"guidelines" as const,ready:true,requirements:Object.freeze({width:8,height:8,additionalPieceTypes:1})}),
   }),
+  Object.freeze({
+    id:"hasami",name:"はさみ将棋",emblem:"挟",status:"ready" as const,
+    description:"9×9盤で双方9枚。縦横へ動かし、挟んだ駒や端・角で囲んだ駒を取り、先に5枚取ると勝ちです。移動・取り方・勝利枚数を共通エディターで編集できます。",
+    editor:Object.freeze({policy:"guidelines" as const,ready:true,requirements:Object.freeze({width:9,height:9,additionalPieceTypes:1})}),
+  }),
 ]);
 
 export function getSpecialGame(id: string): SpecialGameDefinition {

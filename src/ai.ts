@@ -7,8 +7,9 @@ import { boardSettings } from "./boardsettings";
 import { AI_MATE_SCORE as MATE, AI_CANDIDATE_LIMIT, aiVariation, chooseAICandidate } from "./aichoice";
 import type { AICandidate } from "./aichoice";
 import {prepareRuleEngine} from "./scriptvm";
+import {traceMovement} from "./movement";
 
-export interface AIOptions { maxDepth?: number; maxNodes?: number; maxTimeMs?: number; previousPositions?: string[]; passesRemaining?: PassAllowance; pieceRules?: PieceRules; ruleScript?: string; randomSeed?: number; ply?: number }
+export interface AIOptions { maxDepth?: number; maxNodes?: number; maxTimeMs?: number; previousPositions?: string[]; recentMoves?: readonly GameMove[]; passesRemaining?: PassAllowance; pieceRules?: PieceRules; ruleScript?: string; randomSeed?: number; ply?: number }
 export interface AISearchResult { move: GameMove | null; depth: number; nodes: number; score: number; claimDraw?:boolean }
 export interface AIRequest { id: number; position: Position; options: AIOptions }
 export type AIReply = { id: number; result: AISearchResult; progress?: true } | { id: number; error: string };
@@ -19,9 +20,11 @@ function evaluate(position: Position, rules: PieceRules, ruleScript = "", checkB
   if (result) return result.winner === null ? 0 : result.winner === position.turn ? MATE : -MATE;
   let score = 0;
   const defended: Record<Side, Map<number, number>> = { sente: new Map(), gote: new Map() };
+  const attackSquares:number[][]=[];
   for (let i = 0; i < position.board.length; i++) {
     const p = position.board[i]; if (!p) continue;
-    for (const to of attacks(position, i, rules)) defended[p.side].set(to, Math.min(defended[p.side].get(to) ?? Infinity, valueOf(p, rules)));
+    attackSquares[i]=attacks(position,i,rules);
+    for (const to of attackSquares[i]) defended[p.side].set(to, Math.min(defended[p.side].get(to) ?? Infinity, valueOf(p, rules)));
   }
   for (let i = 0; i < position.board.length; i++) {
     const p = position.board[i]; if (!p) continue;
@@ -29,6 +32,14 @@ function evaluate(position: Position, rules: PieceRules, ruleScript = "", checkB
     const center = (position.width - 1) / 2;
     const table=rules[p.type]?.aiTable,row=p.side==="sente"?y:position.height-1-y;
     let value = table ? valueOf(p,rules)+table[Math.round(row/(position.height-1)*(table.length-1))][Math.round(x/(position.width-1)*(table[0].length-1))] : isRoyal(p.type, rules) ? (position.height - 1 - advance) * 4 : valueOf(p, rules) + advance * (p.type === "P" ? 8 : 3) + (center - Math.abs(center - x)) * 2;
+    if(!table&&!isRoyal(p.type,rules)) {
+      // Opening a rook/bishop's lines can require retreating before attacking.
+      // Explicit positional tables keep control of edited pieces' positional scores.
+      const state=pieceState(p,rules),enemy=defended[p.side==="sente"?"gote":"sente"];
+      const destinations=state.moves===state.captures?attackSquares[i]:traceMovement(position,i,state.moves);
+      const mobility=destinations.filter(to=>!position.board[to]&&!enemy.has(to)).length;
+      value+=mobility*(state.moves.some(direction=>direction.range===null||direction.range>1)?2:1);
+    }
     const enemy = defended[p.side === "sente" ? "gote" : "sente"].get(i);
     if (enemy !== undefined && !isRoyal(p.type, rules)) {
       value -= valueOf(p, rules) * (defended[p.side].has(i) ? .12 : .5);
@@ -69,6 +80,18 @@ export function chooseAIMove(position: Position, options: AIOptions = {}, onCand
   };
   const repeats = new Map<string, number>();
   for (const key of options.previousPositions ?? []) repeats.set(key, (repeats.get(key) ?? 0) + 1);
+  const previousOwnMove=options.recentMoves?.at(-2);
+  const rootInCheck=inCheck(position,position.turn,rules);
+  const rootPenalty=(move:GameMove,next:Position):number=>{
+    let penalty=(repeats.get(positionKey(next,remainingAfter(options.passesRemaining,position.turn,move)))??0)*35;
+    // Discourage a quiet immediate reversal even when the opponent changed the board.
+    // Captures, promotions and forced evasions remain governed by the search score.
+    if(previousOwnMove&&!isPassMove(previousOwnMove)&&!isPassMove(move)&&!move.drop&&!move.promote&&!position.board[move.to]&&move.from===previousOwnMove.to&&move.to===previousOwnMove.from&&!rootInCheck) {
+      const type=position.board[move.from!]?.type;
+      penalty+=type&&isRoyal(type,rules)?18:10;
+    }
+    return penalty;
+  };
   const rootMoves:GameMove[] = [], scores = new Map<GameMove,number>();
   const checkRootBudget = () => { if (performance.now() >= (rootMoves.length ? deadline : firstMoveDeadline)) throw limit; };
   let bestMove:GameMove|null = null, bestScore = -Infinity, completedDepth = 0;
@@ -80,7 +103,7 @@ export function chooseAIMove(position: Position, options: AIOptions = {}, onCand
       if(!bestMove) {bestMove=move;publish(move,0);}
       checkRootBudget();
       const next = positionAfterLegalMove(position,move,rules,ruleScript);
-      const score = -evaluate(next,rules,ruleScript,checkRootBudget) - (repeats.get(positionKey(next,remainingAfter(options.passesRemaining,position.turn,move)))??0)*35;
+      const score = -evaluate(next,rules,ruleScript,checkRootBudget) - rootPenalty(move,next);
       scores.set(move,score);
       const improved=score>bestScore;
       if(improved) { bestScore=score;bestMove=move; }
@@ -100,7 +123,7 @@ export function chooseAIMove(position: Position, options: AIOptions = {}, onCand
   }
   if(choice)publish(choice.move,choice.score,true);
   ordered(position,rootMoves,rules);
-  if(Object.values(rules).some(entry=>entry?.aiTable))rootMoves.sort((a,b)=>(scores.get(b)??-Infinity)-(scores.get(a)??-Infinity));
+  rootMoves.sort((a,b)=>(scores.get(b)??-Infinity)-(scores.get(a)??-Infinity));
   const checkBudget = () => { if (nodes >= maxNodes || performance.now() >= deadline) throw limit; };
   function search(current: Position, remaining: PassAllowance | undefined, depth: number, alpha: number, beta: number, ply: number): number {
     checkBudget(); nodes++;
@@ -129,7 +152,7 @@ export function chooseAIMove(position: Position, options: AIOptions = {}, onCand
         checkBudget();
         const next = positionAfterLegalMove(position, move, rules, ruleScript);
         const remaining = remainingAfter(options.passesRemaining, position.turn, move);
-        const repetitionPenalty = (repeats.get(positionKey(next, remaining)) ?? 0) * 35;
+        const repetitionPenalty = rootPenalty(move,next);
         const threshold = alpha - tolerance;
         const score = -search(next, remaining, depth - 1, -Infinity, -(threshold + repetitionPenalty), 1) - repetitionPenalty;
         // Fail-low values are upper bounds, not close alternatives. Never randomize using them.
