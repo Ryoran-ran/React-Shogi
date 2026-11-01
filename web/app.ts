@@ -1,3 +1,6 @@
+import {prepareRuleEngine,ruleEngineReady} from "../src/scriptvm";
+import {readSavedSession,dataUsesScripts} from "../src/savedpreview";
+import type {SavedSession} from "../src/savedpreview";
 import { squareColor, squareColorStyle, algebraicSquare, boardSideName } from "../src/boarddesign";
 import { ShogiGame, MIN_BOARD_SIZE, MAX_BOARD_SIZE, initialPosition, emptyPosition, setupIssues, fileLabel, rankLabel, promotionDepth, pieceName, legalMoves, legalActionIterator, inCheck, positionKey, isPassMove, ruleChoiceForMove } from "../src/shogi";
 import type { GameMove, Move, HandType, Side, Piece, PieceType, Position } from "../src/shogi";
@@ -29,6 +32,7 @@ type GameKind = "standard" | "custom";
 let screen: Screen = "title", screenVersion = 0, workshopAction: "edit" | "play" = "play", editorReturn: "game" | "workshop" | "special" = "game";
 let gameKind: GameKind = "standard", gameName = "普通の将棋", hasGameSession = false;
 let game = new ShogiGame(undefined, { passLimit: 0 }), selected: number | HandType | null = null, flipped = false, pending: GameMove[] = [], toastTimer: ReturnType<typeof setTimeout>;
+let pendingSession:SavedSession|null=null, sessionRestore:AbortController|null=null, restoreProgress:{completed:number;total:number}|null=null;
 let saved = true, loadWarning = "", historyOpen = false, selectedHandIndex = -1;
 let resultOpen = false, resultAnimate = false, pendingClaim = false;
 let editor: BoardEditor | null = null, editorPiece: PieceType | "erase" = "P", editorSide: Side = "sente", editorPromoted = false, editorSquare = -1;
@@ -50,8 +54,19 @@ let aiWorker: Worker | null = null, aiTimer: ReturnType<typeof setTimeout> | und
 let aiWorkerLastMessage = 0;
 let editorTest: { game: ShogiGame; kind: GameKind; name: string; editor: BoardEditor; piece: PieceEditor | null; code: ScriptEditor | null; mode: AIMode; strength: AIStrength; paused: boolean; flipped: boolean; error: string } | null = null;
 try { draftAvailable = localStorage.getItem(EDITOR_DRAFT_KEY) !== null; } catch { /* The editor will show storage failures when used. */ }
-try { const data = localStorage.getItem(storageKey); if (data) { const parsed = JSON.parse(data); game = ShogiGame.load(parsed.game); gameKind = parsed.gameKind === "custom" ? "custom" : inferGameKind(game); gameName = gameKind === "standard" ? "普通の将棋" : typeof parsed.gameName === "string" && parsed.gameName.trim() ? parsed.gameName.slice(0, MAX_SETUP_NAME_LENGTH) : "エディット対局"; hasGameSession = true; flipped = parsed.flipped === true; aiPaused = parsed.aiPaused === true; if (["human", "sente", "gote", "both"].includes(parsed.aiMode)) aiMode = parsed.aiMode; if (["fast", "standard"].includes(parsed.aiStrength)) aiStrength = parsed.aiStrength; } }
-catch { loadWarning = "前回の保存データを読み込めなかったため、初期配置で開きました。"; }
+try {const text=localStorage.getItem(storageKey);if(text){const parsed=readSavedSession(text);pendingSession=parsed;gameKind=parsed.gameKind;gameName=parsed.gameName;hasGameSession=true;flipped=parsed.flipped;aiPaused=parsed.aiPaused;if(["human","sente","gote","both"].includes(parsed.aiMode??""))aiMode=parsed.aiMode as AIMode;if(["fast","standard"].includes(parsed.aiStrength??""))aiStrength=parsed.aiStrength as AIStrength;}}
+catch {loadWarning="前回の保存データを確認できませんでした。元の保存データは保持しています。";}
+function sessionPreview(){const position=game.position;return pendingSession?.preview??{width:position.width,height:position.height,moves:game.moveCount,turn:position.turn,finished:!!game.result};}
+function hasMatchProgress():boolean{return !!(sessionPreview().moves||sessionPreview().finished||gameKind==="custom");}
+function storedRulesNeeded(key:string):boolean{
+  try {const data=JSON.parse(localStorage.getItem(key)??"null");if(key===EDITOR_DRAFT_KEY)return dataUsesScripts({ruleScript:data?.snapshot?.script,pieceRules:data?.pieceDraft?.rules??data?.snapshot?.rules})||!!data?.codeDraft?.source?.trim();return data?.entries?.some((entry:any)=>dataUsesScripts(entry.setup))??false;}catch{return false;}
+}
+function actionNeedsRules(button:HTMLButtonElement):boolean{
+  if(button.dataset.specialPlay||button.dataset.specialEdit||["special-import-legacy","editor-open-script","piece-editor-open-script"].includes(button.id))return true;
+  if(button.id==="title-continue"||button.id==="editor-current")return dataUsesScripts(pendingSession?.game);
+  if(button.id==="editor-restore-draft")return storedRulesNeeded(EDITOR_DRAFT_KEY)||storedRulesNeeded("shogi-setups.v1");
+  return ["title-workshop","workshop-play","workshop-edit","workshop-new","workshop-create-empty","edit-board"].includes(button.id)&&storedRulesNeeded("shogi-setups.v1");
+}
 function sideName(side:Side,position=editor?.position??game.position):string{return boardSideName(position,side);}
 function sideMark(side:Side,position=editor?.position??game.position):string{return position.boardTheme==="chess"?(side==="sente"?"○":"●"):(side==="sente"?"▲":"△");}
 function squareName(position:Position,index:number):string{return position.boardTheme==="chess"?algebraicSquare(position,index):`${position.width-index%position.width}筋${Math.floor(index/position.width)+1}段`;}
@@ -61,7 +76,7 @@ function downloadJSON(data: unknown, filename: string): void {
   try { const link = document.createElement("a"); link.href = url; link.download = filename; link.click(); }
   finally { setTimeout(() => URL.revokeObjectURL(url), 1000); }
 }
-function persist() { if (editorTest) return; try { localStorage.setItem(storageKey, JSON.stringify({ game: game.save(), gameKind, gameName, flipped, aiMode, aiStrength, aiPaused })); saved = true; } catch { saved = false; notify("自動保存できません。棋譜を保存してください。"); } }
+function persist() { if (editorTest) return; try { localStorage.setItem(storageKey, JSON.stringify({ game: pendingSession?.game??game.save(), summary:sessionPreview(), gameKind, gameName, flipped, aiMode, aiStrength, aiPaused })); saved = true; } catch { saved = false; notify("自動保存できません。棋譜を保存してください。"); } }
 function saveDraftNow(): void {
   if (!editor || editorTest) return;
   try {
@@ -98,7 +113,7 @@ function returnFromEditorTest(): void {
   selected = null; pending = []; resultOpen = false; historyOpen = false; setScreen("game"); render();
 }
 function inferGameKind(match: ShogiGame): GameKind { return !match.initialPosition.boardTheme && !match.initialPosition.squareColors && match.passLimit === 0 && !Object.keys(match.pieceRules).length && !match.ruleScript && positionKey(match.initialPosition) === positionKey(initialPosition()) ? "standard" : "custom"; }
-function setScreen(next: Screen): void { screen = next; screenVersion++; composingField = null; }
+function setScreen(next: Screen): void { sessionRestore?.abort(); screen = next; screenVersion++; composingField = null; }
 function isHumanAIMode(): boolean { return aiMode === "sente" || aiMode === "gote"; }
 function activateHumanAI(): void { if (isHumanAIMode()) aiRunning = screen === "game" && !aiPaused && !game.result && !editor; }
 function execute(move: GameMove) { game.play(move); if (editorTest) editorTest.error = ""; selected = null; selectedHandIndex = -1; pending = []; if (game.result) presentResult(); else activateHumanAI(); persist(); render(); scheduleAI(); }
@@ -287,8 +302,23 @@ function goTitle(): void {
   stopAI(); editor = null; pieceEditor = null; scriptEditor = null; editorBoardScroll = null; selected = null; selectedHandIndex = -1; pending = []; historyOpen = false; resultOpen = false; resultAnimate = false;
   setScreen("title"); render(); $("#title-standard").focus();
 }
-function continueGame(): void {
+async function restoreSavedSession():Promise<boolean>{
+  if(pendingSession){
+    sessionRestore?.abort();
+    const saved=pendingSession,controller=new AbortController();sessionRestore=controller;restoreProgress={completed:0,total:saved.preview.moves};if(screen==="title")renderTitle();else notify("保存済みの対局を復元しています…");
+    try {
+      if(dataUsesScripts(saved.game)&&!ruleEngineReady())await prepareRuleEngine();
+      const next=typeof requestAnimationFrame==="function"?await ShogiGame.loadAsync(saved.game,{signal:controller.signal,onProgress:(completed,total)=>{restoreProgress={completed,total};if(screen==="title")renderTitle();},yieldControl:()=>new Promise<void>(resolve=>requestAnimationFrame(()=>resolve()))}):ShogiGame.load(saved.game);
+      if(controller.signal.aborted||pendingSession!==saved)return false;game = next; pendingSession=null;
+      gameKind=saved.gameKind==="custom"?"custom":inferGameKind(next);if(gameKind==="custom"&&saved.gameKind==="standard")gameName="エディット対局";
+    }catch(error){if(!controller.signal.aborted)notify(`対局を読み込めません：${(error as Error).message}`);return false;}
+    finally{if(sessionRestore===controller){sessionRestore=null;restoreProgress=null;if(screen==="title")renderTitle();}}
+  }
+  return true;
+}
+async function continueGame(): Promise<void> {
   if (!hasGameSession) return;
+  if(pendingSession&&!await restoreSavedSession())return;
   stopAI(); editor = null; pieceEditor = null; scriptEditor = null; editorBoardScroll = null; selected = null; selectedHandIndex = -1; pending = []; historyOpen = false;
   resultOpen = game.result !== null; resultAnimate = false; setScreen("game");
   activateHumanAI(); aiStartPly = game.moveCount; render(); scheduleAI();
@@ -311,20 +341,21 @@ async function resumeLegacyChess(): Promise<void> {
   const version=screenVersion;
   try {
     const text=localStorage.getItem("special-chess.v1"); if(!text)throw new Error("以前の保存が見つかりません");
+    await prepareRuleEngine();
     const {importLegacyChess}=await import("../src/chesslegacy.js");
     if(screen!=="special"||version!==screenVersion)return;
     const next=importLegacyChess(JSON.parse(text));
-    if(hasGameSession&&(game.moveCount||game.result||gameKind==="custom")&&!confirm("現在の対局を置き換えて、以前のチェスを読み込みますか？"))return;
-    stopAI(); game=next; gameKind="custom"; gameName="チェス"; hasGameSession=true;
+    if(hasGameSession&&hasMatchProgress()&&!confirm("現在の対局を置き換えて、以前のチェスを読み込みますか？"))return;
+    stopAI(); game = next; pendingSession=null; gameKind="custom"; gameName="チェス"; hasGameSession=true;
     selected=null; pending=[]; historyOpen=false; resultOpen=!!game.result; resultAnimate=false; aiMode="human"; aiPaused=false;
     setScreen("game"); persist(); render();
   } catch(error) { if(screen==="special"&&version===screenVersion)notify(`読み込めませんでした：${(error as Error).message}`); }
 }
 function startMatch(setup: SavedSetup, kind: GameKind): boolean {
   const issues = setupIssues(setup.position, setup.pieceRules, setup.ruleScript); if (issues.length) throw new Error(issues[0]);
-  if (hasGameSession && (game.moveCount || game.result || gameKind === "custom") && !confirm("現在の対局を置き換えて、新しい対局を始めますか？")) return false;
+  if (hasGameSession && hasMatchProgress() && !confirm("現在の対局を置き換えて、新しい対局を始めますか？")) return false;
   const next = new ShogiGame(setup.position, { passLimit: kind === "standard" ? 0 : setup.passLimit, pieceRules: kind === "standard" ? {} : setup.pieceRules, ruleScript: kind === "standard" ? "" : setup.ruleScript });
-  stopAI(); game = next; gameKind = kind; gameName = kind === "standard" ? "普通の将棋" : setup.name; hasGameSession = true;
+  stopAI(); game = next; pendingSession=null; gameKind = kind; gameName = kind === "standard" ? "普通の将棋" : setup.name; hasGameSession = true;
   editor = null; pieceEditor = null; scriptEditor = null; editorBoardScroll = null; selected = null; selectedHandIndex = -1; pending = []; historyOpen = false; resultOpen = false; resultAnimate = false;
   aiPaused = false; setScreen("game"); activateHumanAI(); aiStartPly = 0; persist(); render(); scheduleAI();
   return true;
@@ -335,14 +366,15 @@ function storedSetup(id: string): LocalSetup {
   if (!entry) { render(); throw new Error("保存済みの配置が見つかりません"); }
   return entry;
 }
-function handleMenuClick(button: HTMLButtonElement): void {
+async function handleMenuClick(button: HTMLButtonElement): Promise<void> {
+  if(button.id==="cancel-resume"){sessionRestore?.abort();restoreProgress=null;renderTitle();return;}
   if (button.id === "editor-restore-draft") { restoreDraft(); return; }
   if (button.id === "to-title") { goTitle(); return; }
   if (screen === "title") {
     if (button.id === "title-standard") startMatch(createSetup(initialPosition(), 0, "普通の将棋"), "standard");
     else if (button.id === "title-workshop") openWorkshop();
     else if (button.id === "title-special") openSpecial();
-    else if (button.id === "title-continue") continueGame();
+    else if (button.id === "title-continue") await continueGame();
     return;
   }
   if (screen === "special") {
@@ -376,19 +408,20 @@ async function importWorkshopSetup(input: HTMLInputElement): Promise<void> {
   if (!file) return;
   try {
     const text = await file.text(); if (screen !== "workshop" || version !== screenVersion) return;
-    const setup = loadSetup(JSON.parse(text));
+    const data=JSON.parse(text);if(dataUsesScripts(data)&&!ruleEngineReady())await prepareRuleEngine();if(screen!=="workshop"||version!==screenVersion)return;const setup = loadSetup(data);
     if (action === "edit") openEditor(setup, "workshop");
     else startMatch(setup, "custom");
   } catch (error) { if (screen === "workshop" && version === screenVersion) notify(`配置を開けません：${(error as Error).message}`); }
   finally { input.value = ""; }
 }
 function renderTitle(): void {
+  const preview=sessionPreview(),previewPosition=pendingSession?.game.initialPosition??game.position;
   $("#app").innerHTML = `<header class="site-header menu-header"><div class="brand"><span class="brand-icon">将</span><span>将棋<small>BOARD GAME MAKER</small></span></div><span class="menu-header-note">いつもの一局から、自分だけの盤面まで。</span></header>
     <main class="title-main"><div class="title-heading"><p class="menu-eyebrow">BOARD GAMES / LOCAL PLAY</p><h1>遊び方を選んでください</h1><p>普通の将棋、盤面づくり、Special。</p></div>${draftRecoveryHTML()}<div class="title-choices">
     <section class="title-choice standard-choice"><span class="menu-emblem" aria-hidden="true">将</span><span class="menu-eyebrow">STANDARD</span><h2>普通の将棋</h2><p>9×9の平手で、新しい対局を始めます。<br>2人でも、AI相手でも遊べます。</p><button id="title-standard" class="menu-primary">普通の将棋で遊ぶ <span aria-hidden="true">→</span></button><small>通常のルール・パスなし</small></section>
     <section class="title-choice custom-choice"><span class="menu-emblem" aria-hidden="true">編</span><span class="menu-eyebrow">CREATE & PLAY</span><h2>エディットで遊ぶ</h2><p>盤面の大きさや駒の配置・動きを変えて、<br>自分だけの将棋をつくれます。</p><button id="title-workshop" class="menu-primary">エディットで遊ぶ <span aria-hidden="true">→</span></button><small>新規作成・保存した配置の編集・遊ぶ</small></section>
     <section class="title-choice special-choice"><span class="menu-emblem" aria-hidden="true">S</span><span class="menu-eyebrow">SPECIAL</span><h2>Special</h2><p>チェスなどの作例で遊び、<br>駒やルールを自由に編集できます。</p><button id="title-special" class="menu-primary">Specialを開く <span aria-hidden="true">→</span></button><small>チェス・共通エディターで編集</small></section></div>
-    ${hasGameSession ? `<section class="continue-card" aria-label="前回の対局"><div><span class="menu-eyebrow">CONTINUE</span><strong>${esc(gameName)}</strong><p>${game.position.width}×${game.position.height}盤・${game.moveCount}手${game.result ? "・終局済み" : `・${esc(sideName(game.position.turn))}の手番`}</p></div><button id="title-continue">${game.result ? "前回の対局を見る" : "対局の続きから"} <span aria-hidden="true">→</span></button></section>` : ""}</main>`;
+    ${hasGameSession ? `<section class="continue-card" aria-label="前回の対局"><div><span class="menu-eyebrow">CONTINUE</span><strong>${esc(gameName)}</strong><p>${preview.width}×${preview.height}盤・${preview.moves}手${preview.finished ? "・終局済み" : `・${esc(boardSideName(previewPosition,preview.turn))}の手番`}</p></div><button id="title-continue" ${restoreProgress?"disabled":""}>${restoreProgress?`棋譜を復元中 ${restoreProgress.completed} / ${restoreProgress.total}手`:preview.finished?"前回の対局を見る":"対局の続きから"} <span aria-hidden="true">→</span></button>${restoreProgress?`<button id="cancel-resume" class="text-button">キャンセル</button>`:""}</section>` : ""}</main>`;
 }
 function setupPreview(position: Position, rules?: PieceRules): string {
   return `<div class="setup-preview" aria-hidden="true"><div class="setup-preview-board ${position.boardTheme==="chess"?"board-theme-chess":""}" style="--preview-width:${position.width};--preview-height:${position.height}">${position.board.map((piece,index) => `<span${squareColorStyle(position,index)}>${piece ? renderPiece(piece, rules, { inverted: piece.side === "gote", compact: true }) : ""}</span>`).join("")}</div></div>`;
@@ -470,7 +503,7 @@ async function importEditorSetup(input: HTMLInputElement): Promise<void> {
   if (!current || !file) return;
   try {
     const text = await file.text(); if (editor !== current || screenVersion !== version || pieceEditor || scriptEditor) return;
-    useEditorSetup(loadSetup(JSON.parse(text))); notify("配置ファイルを読み込みました");
+    const data=JSON.parse(text);if(dataUsesScripts(data)&&!ruleEngineReady())await prepareRuleEngine();if(editor!==current||screenVersion!==version)return;useEditorSetup(loadSetup(data)); notify("配置ファイルを読み込みました");
   } catch (error) { if (editor === current && screenVersion === version && !pieceEditor && !scriptEditor) notify(`配置を読み込めません：${(error as Error).message}`); }
   finally { input.value = ""; }
 }
@@ -722,16 +755,20 @@ document.addEventListener("pointerdown", e => {
   const b = (e.target as HTMLElement).closest("button") as HTMLButtonElement | null;
   if (b?.id === "ai-toggle" && !b.disabled && b.dataset.aiAction === "stop") requestAIStop();
 });
-document.addEventListener("click", e => {
+let loadingAction=0;
+document.addEventListener("click", async e => {
   const b = (e.target as HTMLElement).closest("button") as HTMLButtonElement | null; if (!b || b.disabled) return;
+  const action=++loadingAction,version=screenVersion;
   try {
+    if(!ruleEngineReady()&&actionNeedsRules(b)){b.disabled=true;notify("対局に必要な追加ルールを読み込んでいます…");try{await prepareRuleEngine();}finally{b.disabled=false;}if(action!==loadingAction||version!==screenVersion)return;$("#toast").classList.remove("show");}
+    if(b.id==="editor-current"&&editor&&!pieceEditor&&!scriptEditor&&pendingSession){if(!await restoreSavedSession()||action!==loadingAction||version!==screenVersion)return;}
     if (editorTest) {
       if (["editor-test-back","to-title","result-home","edit-board"].includes(b.id)) { returnFromEditorTest(); return; }
       if (b.id === "editor-test-step") { stopAI(); requestAIMove(); return; }
       if (b.id === "editor-test-export") { downloadJSON({ kind: "editor-test-log", version: 1, game: game.save(), initialTrace: game.initialTrace, records: game.records, position: game.position, error: editorTest.error, interruptedTrace: editorTest.error ? game.lastTrace : [] }, "shogi-editor-test-log.json"); return; }
       if (b.id === "open-history") { $(".test-log-panel")?.scrollIntoView?.(); return; }
     }
-    if (!editor && screen !== "game") { handleMenuClick(b); return; }
+    if (!editor && screen !== "game") { await handleMenuClick(b); return; }
     if (resultOpen && !["result-close", "result-view-board", "result-restart", "result-export", "result-home"].includes(b.id)) return;
     if (pending.length && !b.dataset.promote && b.dataset.ruleChoice === undefined && b.dataset.drawClaim === undefined && b.id !== "cancel-promotion") return;
     if (editor) { if (scriptEditor) handleScriptEditorClick(b); else if (pieceEditor) handlePieceEditorClick(b); else handleEditorClick(b); return; }
@@ -925,11 +962,11 @@ document.addEventListener("change", async e => {
     const text = await input.files[0].text();
     if (screen !== "game" || editor || screenVersion !== version || game !== current) return;
     let next: ShogiGame;
-    if (text.trim().startsWith("{")) { const data=JSON.parse(text); next=data.kind === "chess-game" || data.kind === "chess-setup" || data.game?.kind === "chess-game" ? (await import("../src/chesslegacy.js")).importLegacyChess(data) : ShogiGame.load(data); }
-    else next=(await import("../src/chesslegacy.js")).importChessText(text);
+    if (text.trim().startsWith("{")) { const data=JSON.parse(text);if(!ruleEngineReady()&&(dataUsesScripts(data)||data.kind==="chess-game"||data.kind==="chess-setup"||data.game?.kind==="chess-game"))await prepareRuleEngine(); next=data.kind === "chess-game" || data.kind === "chess-setup" || data.game?.kind === "chess-game" ? (await import("../src/chesslegacy.js")).importLegacyChess(data) : ShogiGame.load(data); }
+    else {await prepareRuleEngine();next=(await import("../src/chesslegacy.js")).importChessText(text);}
     if (screen !== "game" || editor || screenVersion !== version || game !== current) return;
     if ((!game.moveCount && !game.result) || confirm("読み込んだ棋譜に切り替えますか？現在の対局は置き換わります。")) {
-      stopAI(); game = next; gameKind = inferGameKind(game); gameName = gameKind === "standard" ? "普通の将棋" : "エディット対局"; hasGameSession = true;
+      stopAI(); game = next; pendingSession=null; gameKind = inferGameKind(game); gameName = gameKind === "standard" ? "普通の将棋" : "エディット対局"; hasGameSession = true;
       selected = null; pending = []; historyOpen = false; resultOpen = game.result !== null; resultAnimate = false;
       aiPaused = false; activateHumanAI(); aiStartPly = game.moveCount; persist(); render(); scheduleAI(); notify("棋譜を読み込みました");
     }

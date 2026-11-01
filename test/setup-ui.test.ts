@@ -1,3 +1,4 @@
+import {importUI} from "./importui";
 import { expect, test } from "bun:test";
 import { ShogiGame } from "../src/shogi";
 import { readLocalSetups, SETUP_STORAGE_KEY } from "../src/setups";
@@ -36,7 +37,7 @@ test("editor layouts can be saved locally, copied, overwritten, exported, reopen
   const change = (id: string, value: string) => listeners.change({ target: { id, value } });
   const input = (id: string, value: string) => listeners.input({ target: { id, value } });
   const importFile = (text: string) => listeners.change({ target: { id: "setup-file-input", files: [{ text: async () => text }], value: "" } });
-  const reload = async () => { elements.clear(); listeners = {}; timers.clear(); await import(`data:text/javascript;base64,${Buffer.from(`${source}\n// setup-ui-session ${++session}`).toString("base64")}`); await click("title-continue"); };
+  const reload = async () => { elements.clear(); listeners = {}; timers.clear(); await importUI(`${source}\n// setup-ui-session ${++session}`); await click("title-continue"); };
   try {
     await reload(); const initialMatch = values.get("shogi-game.v1");
     await click("edit-board"); await change("editor-width", "5"); await change("editor-height", "7"); await click("editor-clear");

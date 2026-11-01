@@ -14,8 +14,10 @@ scope.onmessage = async event => {
   const { id, position, options } = event.data;
   latestRequest = id;
   try {
-    const { chooseAIMove } = await prepare();
+    const engine = await prepare();
+    await engine.prepareAI?.(options);
     if(id!==latestRequest)return;
+    const {chooseAIMove}=engine;
     let lastUpdate = -Infinity;
     const result = chooseAIMove(position, options, (candidate,checkpoint) => {
       const now = performance.now();

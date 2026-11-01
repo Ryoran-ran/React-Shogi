@@ -1,3 +1,4 @@
+import {importUI} from "./importui";
 import { mockAIWorkers } from "./mockworker";
 import { expect, test } from "bun:test";
 import { ShogiGame, emptyPosition, legalMoves, positionAfterLegalMove, positionKey } from "../src/shogi";
@@ -43,7 +44,7 @@ test("human-AI games automatically start, respond, reload, import and resume whi
   const load = async (data: { game: SavedGame; aiMode: string; aiPaused?: boolean }) => {
     if (listeners.change) await change("ai-mode", "human");
     timers.clear(); elements.clear(); workers.length = 0; listeners = {}; stored = JSON.stringify(data);
-    await import(`data:text/javascript;base64,${Buffer.from(`${appSource}\n// session ${++session}`).toString("base64")}`);
+    await importUI(`${appSource}\n// session ${++session}`);
     expect(aiTimers()).toHaveLength(0); expect(html()).toContain("遊び方を選んでください");
     await click("title-continue");
   };
@@ -140,4 +141,4 @@ test("human-AI games automatically start, respond, reload, import and resume whi
     if (listeners.change) await change("ai-mode", "human");
     timers.clear(); Object.assign(globalThis, originals);
   }
-});
+},15000);

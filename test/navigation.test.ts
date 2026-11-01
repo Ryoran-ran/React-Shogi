@@ -1,3 +1,4 @@
+import {importUI} from "./importui";
 import { mockAIWorkers } from "./mockworker";
 import { expect, test } from "bun:test";
 import { ShogiGame, emptyPosition, legalMoves } from "../src/shogi";
@@ -33,7 +34,7 @@ test("title opens standard shogi, the workshop and Special without running AI in
   const change = (id: string, value: string) => listeners.change({ target: { id, value } });
   const aiTimers = () => [...timers.entries()].filter(([, timer]) => timer.delay === 250);
   const tickAI = () => { expect(aiTimers()).toHaveLength(1); const [id, timer] = aiTimers()[0]; timers.delete(id); timer.callback(); };
-  const reload = async () => { elements.clear(); listeners = {}; timers.clear(); workers.length = 0; await import(`data:text/javascript;base64,${Buffer.from(`${source}\n// navigation-session ${++session}`).toString("base64")}`); };
+  const reload = async () => { elements.clear(); listeners = {}; timers.clear(); workers.length = 0; await importUI(`${source}\n// navigation-session ${++session}`); };
   const importFile = (text: string) => listeners.change({ target: { id: "workshop-file-input", files: [{ text: async () => text }], value: "" } });
   try {
     await reload(); expect(html()).toContain("遊び方を選んでください");

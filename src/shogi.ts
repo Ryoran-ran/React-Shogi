@@ -18,6 +18,7 @@ export interface PassMove { pass: true; choices?: string[] }
 export type GameMove = Move | PassMove;
 export type PassAllowance = Record<Side, number | null>;
 export interface GameOptions { passLimit?: number | null; pieceRules?: PieceRules; ruleScript?: string; trace?: boolean }
+export interface GameLoadOptions { signal?:AbortSignal; onProgress?:(completed:number,total:number)=>void; yieldControl?:()=>Promise<void> }
 export interface Result { reason: "mate" | "noMoves" | "repetition" | "perpetualCheck" | "resign" | "agreement" | "script" | "claim"; winner: Side | null }
 export interface MoveRecord { move: GameMove; side: Side; notation: string; check: boolean; effects?: string[]; trace?: RuleTrace[] }
 interface Frame { position: Position; record: MoveRecord | null; result: Result | null; passesUsed: Record<Side, number>; claimMove?:GameMove }
@@ -330,6 +331,19 @@ export class ShogiGame {
   agreeDraw(): void { if (!this.result) this.frames.at(-1)!.result = { reason: "agreement", winner: null }; }
   save(): SavedGame { const reason = this.result?.reason, custom = Object.keys(this.configuredPieceRules).length > 0; return { version: hasPlayerBoardRules(this.initialPosition)?12:this.initialPosition.boardTheme||hasPieceIcons(this.configuredPieceRules)?11:this.initialPosition.squareColors ? 10 : reason==="claim"||hasExtendedBoardSettings(this.initialPosition)||hasExtendedPieceRules(this.configuredPieceRules)?9:this.initialPosition.settings || hasPieceProperties(this.configuredPieceRules) ? 8 : hasPieceScripts(this.configuredPieceRules) ? 7 : this.ruleScript ? 6 : hasPieceLibrary(this.configuredPieceRules) ? 5 : custom ? 4 : 3, initialPosition: this.initialPosition, passLimit: this.passLimit, ...(custom || this.ruleScript || this.initialPosition.settings || this.initialPosition.squareColors || this.initialPosition.boardTheme ? { pieceRules: this.pieceRules } : {}), ...(this.ruleScript ? { ruleScript: this.ruleScript } : {}), moves: this.records.map(r => r.move), ...((reason === "resign" || reason === "agreement" || reason==="claim") ? { ending: reason } : {}), ...(reason==="claim"&&this.frames.at(-1)!.claimMove?{claimMove:clone(this.frames.at(-1)!.claimMove)}:{}) }; }
   static load(data: unknown): ShogiGame {
+    const steps=ShogiGame.restore(data);let step=steps.next();
+    while(!step.done)step=steps.next();
+    return step.value;
+  }
+  static async loadAsync(data:unknown,options:GameLoadOptions={}):Promise<ShogiGame>{
+    const steps=ShogiGame.restore(data),pause=options.yieldControl??(()=>new Promise<void>(resolve=>setTimeout(resolve,0)));
+    while(true){
+      if(options.signal?.aborted)throw new DOMException("対局の読み込みを取り消しました","AbortError");
+      const step=steps.next();if(step.done)return step.value;
+      if(step.value.completed%8===0||step.value.completed===step.value.total){options.onProgress?.(step.value.completed,step.value.total);await pause();}
+    }
+  }
+  private static *restore(data: unknown): Generator<{completed:number;total:number},ShogiGame,void> {
     if (!data || typeof data !== "object") throw new Error("将棋の保存データではありません");
     const d = data as SavedGame;
     if (![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12].includes(d.version) || !Array.isArray(d.moves) || d.moves.length > 1024 || (d.ending !== undefined && !["resign", "agreement", "claim"].includes(d.ending)) || (d.version < 6 && d.ruleScript !== undefined) || (d.version === 6 && !d.ruleScript) || d.ending==="claim"&&d.version<9 || d.claimMove!==undefined&&(d.ending!=="claim"||d.version<9)) throw new Error("対応していない保存データです");
@@ -350,11 +364,13 @@ export class ShogiGame {
       const issues = setupIssues(position, pieceRules, d.ruleScript); if (issues.length) throw new Error(issues[0]);
     }
     const game = new ShogiGame(position, { passLimit, pieceRules, ruleScript: d.ruleScript });
+    let completed=0;yield {completed,total:d.moves.length};
     for (const move of d.moves) {
       if (!move || typeof move !== "object") throw new Error("指し手が壊れています");
       if (isPassMove(move)) { if (d.version === 1) throw new Error("以前の保存形式ではパスを使用できません"); }
       else if ("pass" in move || !Number.isInteger(move.to) || typeof move.promote !== "boolean") throw new Error("指し手が壊れています");
       game.play(move);
+      yield {completed:++completed,total:d.moves.length};
     }
     if (d.ending === "resign") game.resign(); if (d.ending === "agreement") game.agreeDraw();
     if(d.ending==="claim")game.claimDraw(d.claimMove);

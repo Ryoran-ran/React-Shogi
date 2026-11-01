@@ -1,3 +1,4 @@
+import {importUI} from "./importui";
 import {expect,test} from "bun:test";
 import {ShogiGame,initialPosition} from "../src/shogi";
 import {EDITOR_DRAFT_KEY} from "../src/editordraft";
@@ -19,7 +20,7 @@ test("per-square painting, patterns, recovery, exports and play work through the
   const click=(id='',dataset={})=>listeners.click({target:{closest:()=>({id,dataset,disabled:false})}});
   const change=(id:string,value='',checked?:boolean)=>listeners.change({target:{id,value,checked,dataset:{}}});
   const input=(id:string,value:string)=>listeners.input({target:{id,value,dataset:{}}});
-  const reload=async()=>{elements.clear();listeners={};await import(`data:text/javascript;base64,${Buffer.from(`${source}\n// colors-session ${++session}`).toString('base64')}`);};
+  const reload=async()=>{elements.clear();listeners={};await importUI(`${source}\n// colors-session ${++session}`);};
   try {
     await reload();await click('title-workshop');await click('workshop-new');await click('editor-standard');
     expect(html()).toContain('id="editor-square-color"');input('editor-square-color','#112233');await change('editor-square-color','#112233');await click('',{editorSquare:'54'});

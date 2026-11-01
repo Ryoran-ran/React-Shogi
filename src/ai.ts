@@ -6,11 +6,13 @@ import { loadRuleScript, validateRuleScript } from "./rulescript";
 import { boardSettings } from "./boardsettings";
 import { AI_MATE_SCORE as MATE, AI_CANDIDATE_LIMIT, aiVariation, chooseAICandidate } from "./aichoice";
 import type { AICandidate } from "./aichoice";
+import {prepareRuleEngine} from "./scriptvm";
 
 export interface AIOptions { maxDepth?: number; maxNodes?: number; maxTimeMs?: number; previousPositions?: string[]; passesRemaining?: PassAllowance; pieceRules?: PieceRules; ruleScript?: string; randomSeed?: number; ply?: number }
 export interface AISearchResult { move: GameMove | null; depth: number; nodes: number; score: number; claimDraw?:boolean }
 export interface AIRequest { id: number; position: Position; options: AIOptions }
 export type AIReply = { id: number; result: AISearchResult; progress?: true } | { id: number; error: string };
+export async function prepareAI(options:AIOptions):Promise<void>{if(hasRuleScripts(options.ruleScript,options.pieceRules))await prepareRuleEngine();}
 const valueOf = (piece: Piece, rules?: PieceRules): number => isRoyal(piece.type, rules) ? 20000 : pieceState(piece, rules).value;
 function evaluate(position: Position, rules: PieceRules, ruleScript = "", checkBudget?:()=>void): number {
   const result = ruleResult(position,rules,ruleScript,undefined,checkBudget) ?? royalResult(position, rules);

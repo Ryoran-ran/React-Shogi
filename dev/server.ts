@@ -11,7 +11,7 @@ function currentChessCore(): Promise<string> {
   return chessCore;
 }
 function currentScriptVM(): Promise<string> {
-  const modified = statSync(resolve(root, "src/scriptvm.ts")).mtimeMs;
+  const modified = statSync(resolve(root, "src/scriptengine.ts")).mtimeMs;
   if (!scriptVM || modified !== scriptVMTime) { scriptVMTime = modified; scriptVM = buildScriptVM(); }
   return scriptVM;
 }
@@ -23,7 +23,7 @@ const server = Bun.serve({
       try { return new Response(await currentChessCore(), { headers: { "Content-Type": "text/javascript; charset=utf-8", "Cache-Control": "no-store" } }); }
       catch (error) { return new Response(String(error), { status: 500 }); }
     }
-    if (path === "/src/scriptvm.js") {
+    if (path === "/src/scriptengine.js") {
       try { return new Response(await currentScriptVM(), { headers: { "Content-Type": "text/javascript; charset=utf-8", "Cache-Control": "no-store" } }); }
       catch (error) { return new Response(String(error), { status: 500 }); }
     }

@@ -1,3 +1,4 @@
+import {importUI} from "./importui";
 import { expect, test } from "bun:test";
 import { ShogiGame, emptyPosition, legalMoves } from "../src/shogi";
 import { createSetup, saveLocalSetup, readLocalSetups } from "../src/setups";
@@ -58,7 +59,7 @@ test("piece editing flows through undo, setup copies, files, custom games, AI an
   const separate = (checked: boolean) => listeners.change({ target: { id: "piece-rule-separate", checked } });
   const input = (id: string, value: string, dataset = {}) => listeners.input({ target: { id, value, dataset, selectionStart: value.length, selectionEnd: value.length } });
   const importFile = (text: string) => listeners.change({ target: { id: "setup-file-input", files: [{ text: async () => text }], value: "" } });
-  const reload = async () => { elements.clear(); listeners = {}; timers.clear(); await import(`data:text/javascript;base64,${Buffer.from(`${source}\n// piece-editor-session ${++session}`).toString("base64")}`); };
+  const reload = async () => { elements.clear(); listeners = {}; timers.clear(); await importUI(`${source}\n// piece-editor-session ${++session}`); };
   try {
     await reload(); await click("title-workshop"); await click("workshop-edit"); await click("", { workshopEdit: savedSetup.id });
     await click("", { editorPiece: "P" });

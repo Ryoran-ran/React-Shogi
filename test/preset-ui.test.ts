@@ -1,4 +1,5 @@
-import { expect, test } from "bun:test";
+import {importUI} from "./importui";
+import { expect, test, spyOn } from "bun:test";
 import { ShogiGame } from "../src/shogi";
 import type { AIRequest } from "../src/ai";
 import { chooseAIMove } from "../src/ai";
@@ -29,7 +30,7 @@ async function withUI(run:(ui:any)=>Promise<void>) {
   const click=(id="",dataset={})=>listeners.click({target:{closest:()=>({id,dataset,disabled:false})}});
   const input=(id:string,value:string)=>listeners.input({target:{id,value,dataset:{}}});
   const change=(id:string,value="",dataset={},checked?:boolean)=>listeners.change({target:{id,value,dataset,checked}});
-  const reload=async()=>{elements.clear();listeners={};timers.clear();await import(`data:text/javascript;base64,${Buffer.from(`${source}\n// shared-preset-ui ${Date.now()} ${++session}`).toString("base64")}`);};
+  const reload=async()=>{elements.clear();listeners={};timers.clear();await importUI(`${source}\n// shared-preset-ui ${Date.now()} ${++session}`);};
   try {await run({values,storage,element,downloads,workers,click,input,change,reload,html:()=>element("#app").innerHTML as string,draft:()=>JSON.parse(values.get(EDITOR_DRAFT_KEY)!),tickAI:()=>{const entry=[...timers].find(([,t])=>t.delay===250);expect(entry).toBeDefined();timers.delete(entry![0]);entry![1].callback();},importFile:(text:string)=>listeners.change({target:{id:"file-input",files:[{text:async()=>text}],value:""}})});}
   finally {Object.assign(URL,urls);Object.assign(globalThis,original);}
 }
@@ -98,7 +99,9 @@ test("an old long mixed autosave resumes with bounded history and accepts the ne
   const fixture=quietHistoryFixture(),legacy=(await Bun.file(new URL('./fixtures/chess-history-v1.txt',import.meta.url)).text()).replace('const MIXED=false','const MIXED=true');
   const record={version:12,initialPosition:fixture.position,passLimit:0,pieceRules:fixture.setup.pieceRules,ruleScript:legacy,moves:Array.from({length:83},(_,ply)=>fixture.move(ply%2?'gote':'sente'))};
   ui.values.set('shogi-game.v1',JSON.stringify({game:record,gameKind:'custom',gameName:'将棋VSチェス',aiMode:'human'}));
-  await ui.reload();await ui.click('title-continue');expect(ui.html()).toContain('84 手目');
+  const replay=spyOn(ShogiGame,"load");
+  try {await ui.reload();expect(replay).not.toHaveBeenCalled();expect(ui.html()).toContain('83手');await ui.click('title-continue');expect(replay).toHaveBeenCalledTimes(1);}finally{replay.mockRestore();}
+  expect(ui.html()).toContain('84 手目');
   await ui.click('ai-step');const worker=ui.workers.at(-1),options=worker.request.options;
   expect(options.ruleScript).toContain('history:null');expect(JSON.stringify(worker.request.position.ruleState.data).length).toBeLessThan(10000);
   const result=chooseAIMove(worker.request.position,{...options,maxDepth:1,maxNodes:1,maxTimeMs:5});
@@ -107,6 +110,17 @@ test("an old long mixed autosave resumes with bounded history and accepts the ne
   expect(saved.moves).toHaveLength(84);expect(saved.moves.slice(0,83)).toEqual(record.moves);expect(saved.ruleScript).toContain('history:null');
   expect(ui.element('#toast').textContent).not.toContain('壊れています');
 }),15000);
+
+test("requesting the current board from a fresh editor restores a pending saved game only at that point",async()=>withUI(async ui=>{
+  const match=new ShogiGame(undefined,{passLimit:0});match.play({from:54,to:45,promote:false});
+  ui.values.set('shogi-game.v1',JSON.stringify({game:match.save(),gameKind:'standard',aiMode:'human'}));
+  const replay=spyOn(ShogiGame,'load');
+  try {
+    await ui.reload();await ui.click('title-workshop');await ui.click('workshop-new');expect(replay).not.toHaveBeenCalled();
+    await ui.click('editor-current');expect(replay).toHaveBeenCalledTimes(1);expect(ui.draft().snapshot.position).toEqual(match.position);
+    await ui.click('editor-cancel');await ui.click('to-title');await ui.click('title-continue');expect(replay).toHaveBeenCalledTimes(1);expect(ui.html()).toContain('2 手目');
+  }finally{replay.mockRestore();}
+}));
 
 test("chess coordinates, side labels and editable appearance use the common game and editor screens",async()=>withUI(async ui=>{
   const {click,change,reload,html,draft,values}=ui;

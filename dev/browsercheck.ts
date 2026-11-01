@@ -15,7 +15,7 @@ export async function checkBrowserStartup(baseURL: string, brokenRuntime = false
     if (url.origin !== new URL(baseURL).origin || !/^\/(src|web)\/[a-z]+\.js$/.test(url.pathname)) throw new Error(`想定外のモジュールURL：${url.href}`);
     const response = await fetch(url);
     if (!response.ok) throw new Error(`読み込みエラー：${response.status} ${url.href}`);
-    const source = brokenRuntime && url.pathname === "/src/scriptvm.js" ? 'export function evaluateRule() {} throw new Error("Startup runtime unavailable");' : await response.text();
+    const source = brokenRuntime && url.pathname === "/src/scriptvm.js" ? 'export function evaluateRule() {} export function ruleEngineReady() { return false; } export async function prepareRuleEngine() {} throw new Error("Startup runtime unavailable");' : await response.text();
     for (const dependency of scanner.scanImports(source)) {
       if (dependency.kind !== "import-statement" && dependency.kind !== "dynamic-import") continue;
       if (!dependency.path.startsWith(".") && !dependency.path.startsWith("/")) throw new Error(`ブラウザーでは解決できないimport：${dependency.path}`);
@@ -49,6 +49,9 @@ export async function checkBrowserStartup(baseURL: string, brokenRuntime = false
       return { title, error, script: false };
     }
     if (!title) throw new Error(`タイトル画面が起動しません：${element("#boot-error").textContent}`);
+    const runtime=await import(pathToFileURL(resolve(folder,"src/scriptvm.js")).href);
+    if(runtime.ruleEngineReady())throw new Error("タイトルで実行環境を読み込んでいます");
+    await runtime.prepareRuleEngine();
     const shogi = await import(pathToFileURL(resolve(folder, "src/shogi.js")).href);
     const game = new shogi.ShogiGame(undefined, {
       ruleScript: "export default { afterMove(ctx) { ctx.state.count = (ctx.state.count ?? 0) + 1; }, checkResult(ctx) { if (ctx.board.at(47)?.data?.moves === 1) ctx.draw(); } };",
