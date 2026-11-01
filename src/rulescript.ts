@@ -160,6 +160,7 @@ function scriptProgram(rules: Record<string, any>, input: string, pieceRules: Re
         const hand = p.hands[e.side]; if (!(hand[e.captured.type] > 0)) fail("捕獲した持ち駒がありません");
         hand[e.captured.type]--; discardedCaptures.add(event._captureId); effects.push(`${e.captured.type}は持ち駒にならず消滅`);
       },
+      changeSide: (index:number,side:string) => {tick();if(side!=="sente"&&side!=="gote")fail("先後を指定してください");const current=piece(index);if(current.side!==side){p.board[index]=inherit(current,{...current,side});effects.push(`${index}の駒の所属を${side}に変更`);}},
       setPieceData: (index: number, data: any) => { tick(); validateData(data); piece(index).data = copy(data); },
       choose: (title: string, options: any[]) => {
         if (choiceIndex >= 4 || !Array.isArray(options) || !options.length || options.length > 32) fail("選択肢は1〜32件、1手につき4回以内です");
@@ -226,8 +227,8 @@ function scriptProgram(rules: Record<string, any>, input: string, pieceRules: Re
       dispatch("validateMove", event); drain(); dispatch("beforeMove", event); drain();
       if (!passing) {
         if (move.drop) {
-          tick(); square(move.to); if (p.board[move.to] || !(p.hands[side][move.drop] > 0)) fail("駒を打てません");
-          const data = payload.defaults[move.drop]; p.hands[side][move.drop]--; p.board[move.to] = { type: move.drop, side, promoted: false, ...(data ? { data: copy(data) } : {}) }; enqueue("afterMove", { ...event, _pieceId: identity(p.board[move.to]) });
+          tick(); square(move.to); if (p.board[move.to] || !(payload.settings.placementTypes?.includes(move.drop)||payload.playerSettings[side].useHands&&p.hands[side][move.drop]>0)) fail("駒を打てません");
+          const data = payload.defaults[move.drop]; if(!payload.settings.placementTypes?.includes(move.drop))p.hands[side][move.drop]--; p.board[move.to] = { type: move.drop, side, promoted: false, ...(data ? { data: copy(data) } : {}) }; enqueue("afterMove", { ...event, _pieceId: identity(p.board[move.to]) });
         } else relocate(move.from, move.to, true, false, move.promote);
       }
       drain(); dispatch("turnEnd", { side }); drain();

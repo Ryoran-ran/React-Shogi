@@ -1,7 +1,7 @@
 import { validateSquareColors } from "./boarddesign";
 import type { SquareColors, BoardTheme } from "./boarddesign";
 import { HAND_TYPES, canPromote, pieceState, loadPieceRules, pieceDefinition, pieceTypes, handTypes, isBuiltinPiece, hasPieceLibrary, hasPieceScripts, hasRuleScripts, isRoyal, royalTypes, hasPieceProperties, withInitialData, hasExtendedPieceRules, hasPieceIcons } from "./pieces";
-import { boardSettings, loadBoardSettings, hasExtendedBoardSettings, hasPlayerBoardRules } from "./boardsettings";
+import { boardSettings, loadBoardSettings, hasExtendedBoardSettings, hasPlayerBoardRules, hasPlacementSettings } from "./boardsettings";
 import type { BoardSettings } from "./boardsettings";
 import type { PieceType, HandType, PieceRules } from "./pieces";
 import { pieceDestinations, traceMovement } from "./movement";
@@ -22,7 +22,7 @@ export interface GameLoadOptions { signal?:AbortSignal; onProgress?:(completed:n
 export interface Result { reason: "mate" | "noMoves" | "repetition" | "perpetualCheck" | "resign" | "agreement" | "script" | "claim"; winner: Side | null }
 export interface MoveRecord { move: GameMove; side: Side; notation: string; check: boolean; effects?: string[]; trace?: RuleTrace[] }
 interface Frame { position: Position; record: MoveRecord | null; result: Result | null; passesUsed: Record<Side, number>; claimMove?:GameMove }
-export interface SavedGame { version: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12; moves: GameMove[]; passLimit?: number | null; initialPosition?: Position; pieceRules?: PieceRules; ruleScript?: string; ending?: "resign" | "agreement" | "claim"; claimMove?:GameMove }
+export interface SavedGame { version: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13; moves: GameMove[]; passLimit?: number | null; initialPosition?: Position; pieceRules?: PieceRules; ruleScript?: string; ending?: "resign" | "agreement" | "claim"; claimMove?:GameMove }
 export const isPassMove = (move: GameMove): move is PassMove => "pass" in move && move.pass === true;
 export const SIDE_NAMES = { sente: "先手", gote: "後手" };
 export const MIN_BOARD_SIZE = 3, MAX_BOARD_SIZE = 15;
@@ -56,6 +56,7 @@ export function validatePosition(data: unknown, rules?: PieceRules): asserts dat
   if(p.boardTheme!==undefined&&p.boardTheme!=="chess")throw new Error("盤面の表示スタイルが壊れています");
   validateSquareColors(p.squareColors, p.width * p.height);
   const types = pieceTypes(rules), handPieces = handTypes(rules);
+  for(const type of p.settings?.placementTypes??[])if(!handPieces.includes(type)||isRoyal(type,rules))throw new Error("盤外から配置する駒を確認してください。王は指定できません");
   for (const piece of p.board) {
     if (piece === null) continue;
     if (!piece || typeof piece !== "object" || !types.includes(piece.type) || !["sente", "gote"].includes(piece.side) || typeof piece.promoted !== "boolean" || (piece.promoted && !canPromote(piece.type, rules))) throw new Error("駒の設定が壊れています");
@@ -125,7 +126,7 @@ export function ruleResult(position:Position,rules:PieceRules={},script="",remai
 function applyUnchecked(position: Position, move: GameMove, rules?: PieceRules): Position {
   const next = clone(position), side = position.turn;
   if (isPassMove(move)) { next.turn = opposite(side); return next; }
-  if (move.drop) { next.hands[side][move.drop]--; next.board[move.to] = withInitialData({ type: move.drop, side, promoted: false }, rules); }
+  if (move.drop) { if(!boardSettings(position).placementTypes?.includes(move.drop))next.hands[side][move.drop]--; next.board[move.to] = withInitialData({ type: move.drop, side, promoted: false }, rules); }
   else {
     const p = next.board[move.from!]!, captured = next.board[move.to];
     if (captured && !isRoyal(captured.type, rules) && boardSettings(position,side).useHands) next.hands[side][captured.type] = (next.hands[side][captured.type] ?? 0) + 1;
@@ -176,10 +177,10 @@ export function* legalMoveIterator(position: Position, rules?: PieceRules, ruleS
   if (royalResult(position, rules)) return;
   yield* boardMoves(position, rules, ruleScript, checkBudget);
   const side = position.turn, settings = boardSettings(position,side);
-  if (!settings.useHands) return;
+  if (!settings.useHands&&!settings.placementTypes?.length) return;
   for (const drop of handTypes(rules)) {
     if (isRoyal(drop, rules)) continue;
-    if (!position.hands[side][drop]) continue;
+    if (!(settings.useHands&&position.hands[side][drop])&&!settings.placementTypes?.includes(drop)) continue;
     for (let to = 0; to < position.board.length; to++) {
       checkBudget?.();
       if (position.board[to]) continue;
@@ -329,7 +330,7 @@ export class ShogiGame {
   }
   resign(): void { if (!this.result) this.frames.at(-1)!.result = { reason: "resign", winner: opposite(this.position.turn) }; }
   agreeDraw(): void { if (!this.result) this.frames.at(-1)!.result = { reason: "agreement", winner: null }; }
-  save(): SavedGame { const reason = this.result?.reason, custom = Object.keys(this.configuredPieceRules).length > 0; return { version: hasPlayerBoardRules(this.initialPosition)?12:this.initialPosition.boardTheme||hasPieceIcons(this.configuredPieceRules)?11:this.initialPosition.squareColors ? 10 : reason==="claim"||hasExtendedBoardSettings(this.initialPosition)||hasExtendedPieceRules(this.configuredPieceRules)?9:this.initialPosition.settings || hasPieceProperties(this.configuredPieceRules) ? 8 : hasPieceScripts(this.configuredPieceRules) ? 7 : this.ruleScript ? 6 : hasPieceLibrary(this.configuredPieceRules) ? 5 : custom ? 4 : 3, initialPosition: this.initialPosition, passLimit: this.passLimit, ...(custom || this.ruleScript || this.initialPosition.settings || this.initialPosition.squareColors || this.initialPosition.boardTheme ? { pieceRules: this.pieceRules } : {}), ...(this.ruleScript ? { ruleScript: this.ruleScript } : {}), moves: this.records.map(r => r.move), ...((reason === "resign" || reason === "agreement" || reason==="claim") ? { ending: reason } : {}), ...(reason==="claim"&&this.frames.at(-1)!.claimMove?{claimMove:clone(this.frames.at(-1)!.claimMove)}:{}) }; }
+  save(): SavedGame { const reason = this.result?.reason, custom = Object.keys(this.configuredPieceRules).length > 0; return { version: hasPlacementSettings(this.initialPosition)?13:hasPlayerBoardRules(this.initialPosition)?12:this.initialPosition.boardTheme||hasPieceIcons(this.configuredPieceRules)?11:this.initialPosition.squareColors ? 10 : reason==="claim"||hasExtendedBoardSettings(this.initialPosition)||hasExtendedPieceRules(this.configuredPieceRules)?9:this.initialPosition.settings || hasPieceProperties(this.configuredPieceRules) ? 8 : hasPieceScripts(this.configuredPieceRules) ? 7 : this.ruleScript ? 6 : hasPieceLibrary(this.configuredPieceRules) ? 5 : custom ? 4 : 3, initialPosition: this.initialPosition, passLimit: this.passLimit, ...(custom || this.ruleScript || this.initialPosition.settings || this.initialPosition.squareColors || this.initialPosition.boardTheme ? { pieceRules: this.pieceRules } : {}), ...(this.ruleScript ? { ruleScript: this.ruleScript } : {}), moves: this.records.map(r => r.move), ...((reason === "resign" || reason === "agreement" || reason==="claim") ? { ending: reason } : {}), ...(reason==="claim"&&this.frames.at(-1)!.claimMove?{claimMove:clone(this.frames.at(-1)!.claimMove)}:{}) }; }
   static load(data: unknown): ShogiGame {
     const steps=ShogiGame.restore(data);let step=steps.next();
     while(!step.done)step=steps.next();
@@ -346,10 +347,11 @@ export class ShogiGame {
   private static *restore(data: unknown): Generator<{completed:number;total:number},ShogiGame,void> {
     if (!data || typeof data !== "object") throw new Error("将棋の保存データではありません");
     const d = data as SavedGame;
-    if (![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12].includes(d.version) || !Array.isArray(d.moves) || d.moves.length > 1024 || (d.ending !== undefined && !["resign", "agreement", "claim"].includes(d.ending)) || (d.version < 6 && d.ruleScript !== undefined) || (d.version === 6 && !d.ruleScript) || d.ending==="claim"&&d.version<9 || d.claimMove!==undefined&&(d.ending!=="claim"||d.version<9)) throw new Error("対応していない保存データです");
+    if (![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13].includes(d.version) || !Array.isArray(d.moves) || d.moves.length > 1024 || (d.ending !== undefined && !["resign", "agreement", "claim"].includes(d.ending)) || (d.version < 6 && d.ruleScript !== undefined) || (d.version === 6 && !d.ruleScript) || d.ending==="claim"&&d.version<9 || d.claimMove!==undefined&&(d.ending!=="claim"||d.version<9)) throw new Error("対応していない保存データです");
     if ((d.version >= 4 && d.pieceRules === undefined) || (d.version < 4 && d.pieceRules !== undefined)) throw new Error("駒の動きの保存形式が壊れています");
     if(d.version<10&&d.initialPosition?.squareColors!==undefined)throw new Error("盤面の色の保存形式が壊れています");
     const pieceRules = loadPieceRules(d.pieceRules);
+    if(d.version<13&&hasPlacementSettings(d.initialPosition??{}))throw new Error("盤外配置・表示設定の保存形式が壊れています");
     if(d.version<12&&hasPlayerBoardRules(d.initialPosition??{}))throw new Error("先後別のルールの保存形式が壊れています");
     if(d.version<11&&(d.initialPosition?.boardTheme!==undefined||hasPieceIcons(pieceRules)))throw new Error("駒や盤面の表示の保存形式が壊れています");
     if(d.version<9&&(hasExtendedBoardSettings(d.initialPosition??initialPosition())||hasExtendedPieceRules(pieceRules)))throw new Error("追加の勝敗条件・駒の設定の保存形式が壊れています");

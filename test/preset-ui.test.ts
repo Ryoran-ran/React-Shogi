@@ -9,6 +9,7 @@ import { legacyChessSetup } from "../src/chesslegacy";
 import { EDITOR_DRAFT_KEY } from "../src/editordraft";
 import { readLocalSetups, saveLocalSetup } from "../src/setups";
 import {quietHistoryFixture} from "./historyfixture";
+import {OTHELLO_STONE} from "../src/othellopreset";
 
 async function withUI(run:(ui:any)=>Promise<void>) {
   const url=new URL("../web/app.ts",import.meta.url);
@@ -34,6 +35,26 @@ async function withUI(run:(ui:any)=>Promise<void>) {
   try {await run({values,storage,element,downloads,workers,click,input,change,reload,html:()=>element("#app").innerHTML as string,draft:()=>JSON.parse(values.get(EDITOR_DRAFT_KEY)!),tickAI:()=>{const entry=[...timers].find(([,t])=>t.delay===250);expect(entry).toBeDefined();timers.delete(entry![0]);entry![1].callback();},importFile:(text:string)=>listeners.change({target:{id:"file-input",files:[{text:async()=>text}],value:""}})});}
   finally {Object.assign(URL,urls);Object.assign(globalThis,original);}
 }
+
+test('Othello uses direct placement, shared editing, local/JSON saves, undo, reload and the common AI',async()=>withUI(async ui=>{
+  const {click,change,reload,html,draft,values,downloads,storage,tickAI,workers}=ui;
+  await reload();await click('title-special');await click('',{specialPlay:'othello'});
+  expect(html()).toContain('● 黒の手番');expect(html().match(/data-square=/g)).toHaveLength(64);expect(html().match(/piece-shape-circle/g)).toHaveLength(4);
+  expect(html()).toContain('data-piece-count="sente"');expect(html()).not.toContain('data-player="sente"');expect(html()).toContain('id="pass" disabled');expect(html()).toContain('印のあるマスを押して配置');
+  await click('',{square:'19'});let record=JSON.parse(values.get('shogi-game.v1')).game;expect(record.version).toBe(13);expect(record.moves).toHaveLength(1);expect(ShogiGame.load(record).position.ruleState?.data.score).toEqual({sente:4,gote:1});expect(html()).toContain('○ 白の手番');
+  await click('undo');expect(JSON.parse(values.get('shogi-game.v1')).game.moves).toHaveLength(0);await click('',{square:'19'});
+  await click('to-title');await reload();await click('title-continue');expect(html()).toContain('○ 白の手番');
+  await change('ai-mode','sente');tickAI();const worker=workers.at(-1);expect(worker.request.options.pieceRules[OTHELLO_STONE]).toBeDefined();expect(worker.request.options.ruleScript).toContain('changeSide');
+  const result=chooseAIMove(worker.request.position,{...worker.request.options,maxDepth:1,maxNodes:1,maxTimeMs:5});worker.onmessage({data:{id:worker.request.id,result}});expect(JSON.parse(values.get('shogi-game.v1')).game.moves).toHaveLength(2);
+  await change('ai-mode','human');await click('edit-board');expect(html()).toContain('盤外からの配置');expect(html()).toContain(`data-placement-type="${OTHELLO_STONE}" checked`);
+  await change('','<',{ruleSide:'sente',playerRule:'mark'});expect(draft().snapshot.position.settings.playerRules.sente.mark).toBe('<');expect(html()).toContain('value="&lt;"');
+  await click('editor-undo');expect(draft().snapshot.position.settings.playerRules.sente.mark).toBe('●');
+  await change('','',{placementType:OTHELLO_STONE},false);expect(draft().snapshot.position.settings.placementTypes).toEqual([]);await click('editor-undo');
+  await click('editor-open-piece-settings');await click('',{rulePiece:OTHELLO_STONE});await click('',{pieceSection:'design'});expect(html()).toContain('黒のデザイン');expect(html()).toContain('白のデザイン');await click('piece-editor-back');
+  ui.input('editor-setup-name','オセロ');await click('editor-save-local');const saved=readLocalSetups(storage).find(entry=>entry.setup.name==='オセロ');expect(saved?.setup.version).toBe(11);
+  await click('editor-export-setup');const exported=JSON.parse(await downloads.at(-1).text());expect(exported.kind).toBe('shogi-setup');expect(exported.position.settings.placementTypes).toEqual([OTHELLO_STONE]);expect(exported.ruleScript).toContain('changeSide');
+  await click('editor-test-start');expect(html()).toContain('印のあるマスを押して配置');await click('editor-test-back');await click('editor-apply');expect(JSON.parse(values.get('shogi-game.v1')).game.version).toBe(13);
+}),15000);
 
 test("Special chess uses the existing piece/code editor, shared saves, test sessions and AI worker",async()=>withUI(async ui=>{
   const {values,storage,element,downloads,workers,click,input,change,reload,html,draft,tickAI}=ui;
