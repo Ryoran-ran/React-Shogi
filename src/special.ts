@@ -15,17 +15,16 @@ export interface EditorRequirements {
 export interface EditorAccess { readonly allowed: boolean; readonly reasons: readonly string[] }
 export interface SpecialGameDefinition {
   readonly id: string; readonly name: string; readonly emblem: string; readonly description: string;
-  // Add the game's dedicated runtime before introducing an available state.
-  readonly status: "planned";
-  readonly editor: { readonly policy: "guidelines"; readonly requirements: EditorRequirements }
+  readonly status: "planned" | "ready";
+  readonly editor: { readonly policy: "guidelines"; readonly requirements: EditorRequirements; readonly ready?: boolean }
     | { readonly policy: "play-only"; readonly reason: string };
 }
 
 export const SPECIAL_GAMES: readonly SpecialGameDefinition[] = Object.freeze([
   Object.freeze({
-    id: "chess", name: "チェス", emblem: "♞", status: "planned" as const,
-    description: "将棋とは異なる駒の動きや勝敗条件で遊ぶための枠です。専用の対局ルールと編集用データを追加する予定です。",
-    editor: Object.freeze({ policy: "guidelines" as const, requirements: Object.freeze({ width: 8, height: 8, additionalPieceTypes: 6 }) }),
+    id: "chess", name: "チェス", emblem: "♞", status: "ready" as const,
+    description: "既存エディターの駒・配置・ルールコードで作ったチェスの作例です。移動や効果を変えて、独自のゲームへ発展させられます。",
+    editor: Object.freeze({ policy: "guidelines" as const, ready: true, requirements: Object.freeze({ width: 8, height: 8, additionalPieceTypes: 6 }) }),
   }),
 ]);
 
@@ -64,7 +63,8 @@ export function assertSpecialEditorAllowed(game: SpecialGameDefinition, setup?: 
   const rules = loadPieceRules(setup.pieceRules);
   validatePosition(setup.position, rules); loadRuleScript(setup.ruleScript);
 }
-export function assertSpecialActionAvailable(game: SpecialGameDefinition, action: "play" | "edit"): never {
+export function assertSpecialActionAvailable(game: SpecialGameDefinition, action: "play" | "edit"): void {
   if (action === "edit") assertSpecialEditorAllowed(game);
+  if (game.status === "ready" && (action === "play" || game.editor.policy === "guidelines" && game.editor.ready)) return;
   throw new Error(`${game.name}の${action === "edit" ? "編集用データ" : "対局機能"}は準備中です。`);
 }

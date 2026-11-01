@@ -6,13 +6,14 @@ import { MAX_CUSTOM_PIECES, MAX_PIECE_OFFSET, MAX_MOVEMENT_RULES } from "../src/
 import { MAX_SCRIPT_LENGTH } from "../src/scriptconfig";
 import { renderSpecialScreen } from "../src/specialview";
 
-test("Special lists the planned chess game without claiming it is playable", () => {
-  expect(SPECIAL_GAMES.map(game => [game.id, game.status])).toEqual([["chess", "planned"]]);
+test("Special exposes the implemented chess game while planned games remain unavailable", () => {
+  expect(SPECIAL_GAMES.map(game => [game.id, game.status])).toEqual([["chess", "ready"]]);
   expect(specialEditorAccess(getSpecialGame("chess")).allowed).toBe(true);
   expect(Object.isFrozen(SPECIAL_GAMES)).toBe(true); expect(Object.isFrozen(getSpecialGame("chess").editor)).toBe(true);
   expect(() => getSpecialGame("unknown")).toThrow("見つかりません");
-  for (const game of SPECIAL_GAMES) expect(() => assertSpecialActionAvailable(game, "play")).toThrow("準備中");
-  expect(() => assertSpecialActionAvailable(getSpecialGame("chess"), "edit")).toThrow("準備中");
+  expect(() => assertSpecialActionAvailable(getSpecialGame("chess"), "play")).not.toThrow();
+  expect(() => assertSpecialActionAvailable(getSpecialGame("chess"), "edit")).not.toThrow();
+  expect(() => assertSpecialActionAvailable({...getSpecialGame("chess"),status:"planned"}, "play")).toThrow("準備中");
 });
 
 test("editor guidelines share the actual editor limits, allow boundary values and reject unsupported configurations", () => {
@@ -42,10 +43,10 @@ test("Special's editor gate checks the actual setup and never treats play-only a
   expect(() => assertSpecialEditorAllowed(chess,{...setup,ruleScript:'export default { afterMove('})).not.toThrow();
 });
 
-test("Special's catalog explains preparation, editing policy and guidelines with disabled actions", () => {
-  const html=renderSpecialScreen(); expect(html).toContain("対局機能は準備中"); expect(html).toContain("編集対応予定"); expect(html).not.toContain("大局将棋");
+test("Special's catalog enables chess and its editor and explains the editing guidelines", () => {
+  const html=renderSpecialScreen(); expect(html).toContain("チェスで遊べます"); expect(html).toContain("編集できます"); expect(html).not.toContain("大局将棋");
   for (const id of ["chess"]) {
-    expect(html).toContain(`data-special-play="${id}" disabled`); expect(html).toContain(`data-special-edit="${id}" disabled`);
+    expect(html).toContain(`data-special-play="${id}"`); expect(html).not.toContain(`data-special-play="${id}" disabled`); expect(html).toContain(`data-special-edit="${id}"`); expect(html).not.toContain(`data-special-edit="${id}" disabled`);
   }
   expect(html).toContain("3〜15マス"); expect(html).toContain("追加駒は32種類");
   const ids=[...html.matchAll(/\bid="([^"]+)"/g)].map(match=>match[1]); expect(new Set(ids).size).toBe(ids.length);

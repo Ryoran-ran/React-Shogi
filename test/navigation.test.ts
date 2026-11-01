@@ -47,13 +47,13 @@ test("title opens standard shogi, the workshop and Special without running AI in
     await reload(); expect(html()).toContain("遊び方を選んでください");
     expect(html()).toContain('id="title-standard"'); expect(html()).toContain('id="title-workshop"'); expect(html()).toContain('id="title-special"');
     expect(html()).not.toContain('id="title-continue"'); expect(aiTimers()).toHaveLength(0);
-    await click("title-special"); expect(html()).toContain('data-special-game="chess"'); expect(html()).not.toContain('data-special-game="taikyoku-shogi"'); expect(html()).not.toContain("大局将棋"); expect(html()).toContain("編集対応予定");
+    await click("title-special"); expect(html()).toContain('data-special-game="chess"'); expect(html()).not.toContain('data-special-game="taikyoku-shogi"'); expect(html()).not.toContain("大局将棋"); expect(html()).toContain("編集できます");
     const beforeSpecial=values.get("shogi-game.v1");
     await click("",{specialEdit:"taikyoku-shogi"}); expect(element("#toast").textContent).toContain("見つかりません");
-    await click("",{specialEdit:"chess"}); expect(element("#toast").textContent).toContain("準備中");
-    await click("",{specialPlay:"chess"}); expect(element("#toast").textContent).toContain("準備中");
-    await click("workshop-new"); expect(html()).not.toContain("盤面エディット"); expect(values.get("shogi-game.v1")).toBe(beforeSpecial); expect(aiTimers()).toHaveLength(0);
-    await listeners.keydown({key:"Escape",preventDefault(){}}); expect(html()).toContain("遊び方を選んでください");
+    await click("",{specialEdit:"chess"}); expect(html()).toContain("盤面エディット"); expect(html()).toContain('value="チェス"'); expect(values.get("shogi-game.v1")).toBe(beforeSpecial); await click("editor-cancel");
+    await click("",{specialPlay:"chess"}); expect((html().match(/data-square=/g)??[])).toHaveLength(64);
+    await click("workshop-new"); expect(html()).not.toContain("盤面エディット"); expect(JSON.parse(values.get("shogi-game.v1")!).game.initialPosition.width).toBe(8); expect(aiTimers()).toHaveLength(0);
+    await click("to-title"); await click("title-special");await listeners.keydown({key:"Escape",preventDefault(){}}); expect(html()).toContain("遊び方を選んでください");
     await click("title-standard");
     expect((html().match(/data-square=/g) ?? [])).toHaveLength(81);
     expect(JSON.parse(values.get("shogi-game.v1")!).gameKind).toBe("standard");

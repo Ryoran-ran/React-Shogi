@@ -1,6 +1,6 @@
 import { evaluateRule } from "./scriptvm";
 import type { GameMove, Position, Side } from "./shogi";
-import { pieceTypes, canPromote, royalTypes } from "./pieces";
+import { pieceTypes, canPromote, royalTypes, pieceState } from "./pieces";
 import { boardSettings } from "./boardsettings";
 import type { PieceRules } from "./pieces";
 import { loadRuleScript, validateScriptData } from "./scriptconfig";
@@ -9,7 +9,7 @@ export { validateScriptData } from "./scriptconfig";
 export type { ScriptData, ScriptValue } from "./scriptconfig";
 export { loadRuleScript, MAX_SCRIPT_LENGTH, SCRIPT_HOOKS, PIECE_SCRIPT_HOOKS } from "./scriptconfig";
 
-export interface RuleState { data: ScriptData; ply: number; seed: number; result?: { winner: Side | null; reason: "script" } }
+export interface RuleState { data: ScriptData; ply: number; seed: number; result?: { winner: Side | null; reason: "script" }; repetitionKey?: string; drawClaim?: string; mayClaimNext?: boolean; drawUnlessMate?: boolean }
 export interface RuleChoice { title: string; options: Array<{ value: string; label: string }>; index: number }
 export interface RuleTrace { event: string; scope: "board" | "piece"; pieceType?: string; square?: number; side?: Side; changes: string[]; error?: string }
 export interface ScriptOutcome { position?: Position; effects?: string[]; choice?: RuleChoice; rejected?: string; trace?: RuleTrace[]; error?: string }
@@ -18,6 +18,8 @@ export function validateRuleState(value: unknown): asserts value is RuleState {
   const state = value as RuleState;
   if (!state || !Number.isSafeInteger(state.ply) || state.ply < 0 || !Number.isInteger(state.seed) || state.seed < 1 || state.seed > 0xffffffff || (state.result && (state.result.reason !== "script" || !["sente", "gote", null].includes(state.result.winner)))) throw new Error("ルールの状態が壊れています");
   validateScriptData(state.data);
+  if(state.drawUnlessMate!==undefined&&(typeof state.drawUnlessMate!=="boolean"||state.result?.winner!==null))throw new Error("引き分けの優先順位が壊れています");
+  if(state.repetitionKey!==undefined&&(typeof state.repetitionKey!=="string"||state.repetitionKey.length>4000)||state.drawClaim!==undefined&&(typeof state.drawClaim!=="string"||!state.drawClaim||state.drawClaim.length>200)||state.mayClaimNext!==undefined&&typeof state.mayClaimNext!=="boolean")throw new Error("追加ルールの局面・申請情報が壊れています");
 }
 
 // This function is serialized into QuickJS. It deliberately has no host closures or browser APIs.
@@ -34,6 +36,7 @@ function scriptProgram(rules: Record<string, any>, input: string, pieceRules: Re
   if (payload.validate) return JSON.stringify({});
   p.ruleState ??= { data: {}, ply: 0, seed: 1 };
   const state = p.ruleState, effects: string[] = [], queue: any[] = [];
+  delete state.drawClaim;delete state.mayClaimNext;delete state.repetitionKey;delete state.drawUnlessMate;
   const trace: any[] = []; let traceSize = 0;
   let failureContext = "";
   // Identities are private to this simulation; per-piece persisted state stays in piece.data.
@@ -71,7 +74,7 @@ function scriptProgram(rules: Record<string, any>, input: string, pieceRules: Re
     if (rules[type]) invoke(type, event, rules[type]);
     const targets = ["onStart", "turnStart", "turnEnd"].includes(type)
       ? p.board.flatMap((item: any, index: number) => item && (type === "onStart" || item.side === event.side) ? [{ piece: copy(item), id: identity(item), square: index, phase: true }] : [])
-      : type === "afterCaptured" && event.captured ? [{ piece: event.captured, id: event._capturedId, square: event.to, removed: true }]
+      : type === "afterCaptured" && event.captured ? [{ piece: event.captured, id: event._capturedId, square: event.capturedSquare ?? event.to, removed: true }]
       : type === "afterDestroy" && event.piece ? [{ piece: event.piece, id: event._pieceId, square: event.from, removed: true }]
       : type !== "checkResult" && event.piece ? [{ piece: event.piece, id: event._pieceId, square: event.from ?? event.to }] : [];
     for (const target of targets) {
@@ -91,6 +94,22 @@ function scriptProgram(rules: Record<string, any>, input: string, pieceRules: Re
       state: state.data,
       board: {
         width: p.width, height: p.height,
+        snapshot: () => copy(p.board),
+        isAttacked: (index: number, side: string, board = p.board) => {
+          square(index);if(!["sente","gote"].includes(side)||!Array.isArray(board)||board.length!==p.board.length)fail("利きの照会が不正です");
+          if(board!==p.board)for(const item of board)if(item){knownType(item.type,item.promoted);if(!["sente","gote"].includes(item.side))fail("仮の盤面の駒が不正です");}
+          for(let from=0;from<board.length;from++){
+            const item=board[from];if(!item||item.side!==side)continue;
+            for(const movement of payload.attacks[item.type][item.promoted?"promoted":"normal"]){
+              const dx=movement.dx,dy=movement.dy*(side==="sente"?-1:1);let x=from%p.width,y=Math.floor(from/p.width);
+              for(let step=0;step<(movement.range??Math.max(p.width,p.height));step++){
+                x+=dx;y+=dy;if(x<0||x>=p.width||y<0||y>=p.height)break;const to=y*p.width+x;
+                if(to===index)return true;if(board[to])break;
+              }
+            }
+          }
+          return false;
+        },
         at: (index: number) => copy(p.board[square(index)]),
         pieces: (side?: string) => p.board.flatMap((item: any, index: number) => item && (!side || item.side === side) ? [{ square: index, piece: copy(item) }] : []),
         neighbors: (index: number, radius = 1) => {
@@ -125,6 +144,14 @@ function scriptProgram(rules: Record<string, any>, input: string, pieceRules: Re
       },
       move: (from: number, to: number, capture = false) => relocate(from, to, capture, true),
       capture: (from: number, to: number) => relocate(from, to, true, true),
+      capturePiece: (from: number, target: number) => {
+        tick();const moving=copy(piece(from)),captured=copy(piece(target));if(from===target||moving.side===captured.side)fail("相手の駒を選んでください");
+        const event={from,to:from,capturedSquare:target,side:moving.side,piece:moving,captured,automatic:true,_pieceId:identity(p.board[from]),_capturedId:identity(p.board[target]),_captureId:++captureSequence};
+        dispatch("beforeCapture",event);
+        if(!p.board[from]||identities.get(p.board[from])!==event._pieceId||!p.board[target]||identities.get(p.board[target])!==event._capturedId)fail("捕獲前の効果で対象が変更されました");
+        if(payload.settings.useHands&&!payload.royals.includes(captured.type))p.hands[moving.side][captured.type]=(p.hands[moving.side][captured.type]??0)+1;
+        p.board[target]=null;effects.push(`${captured.type}を${target}から捕獲`);enqueue("afterCapture",event);enqueue("afterCaptured",event);
+      },
       discardCapture: () => {
         if (!e.captured) fail("捕獲された駒がありません");
         if (type !== "afterCapture" && type !== "afterCaptured") fail("discardCapture は afterCapture / afterCaptured で使ってください");
@@ -148,8 +175,11 @@ function scriptProgram(rules: Record<string, any>, input: string, pieceRules: Re
       },
       random: () => { state.seed = (Math.imul(state.seed, 1664525) + 1013904223) >>> 0 || 1; return state.seed / 0x100000000; },
       reject: (message = "この手はルールで禁止されています") => { rejection = String(message).slice(0, 200); throw rejected; },
-      win: (side: string) => { tick(); if (!["sente", "gote"].includes(side)) fail("勝者の指定が不正です"); state.result = { reason: "script", winner: side }; },
-      draw: () => { tick(); state.result = { reason: "script", winner: null }; },
+      win: (side: string) => { tick(); if (!["sente", "gote"].includes(side)) fail("勝者の指定が不正です"); state.result = { reason: "script", winner: side }; delete state.drawUnlessMate; },
+      draw: (options?: {unlessMate?: boolean}) => { tick(); state.result = { reason: "script", winner: null }; if(options?.unlessMate===true)state.drawUnlessMate=true; else delete state.drawUnlessMate; },
+      setRepetitionKey: (key: string) => {if(typeof key!=="string"||key.length>4000)fail("繰り返しの局面キーは4000文字以内です");state.repetitionKey=key;},
+      allowDrawClaim: (reason: string) => {if(typeof reason!=="string"||!reason||reason.length>200)fail("引き分けの申請理由は1〜200文字です");state.drawClaim=reason;},
+      checkDrawClaimAfterMove: () => {state.mayClaimNext=true;},
       log: (message: unknown) => { tick(); effects.push(String(message).slice(0, 200)); },
     };
     const before = payload.trace ? copy(p) : null, effectStart = effects.length;
@@ -233,7 +263,8 @@ const transitionCache = new Map<string, ScriptOutcome>();
 export function runRuleScript(source: string, position: Position, rules: PieceRules, move?: GameMove, trace = false): ScriptOutcome {
   const key = JSON.stringify([source, position, rules, move, trace]);
   const cached = transitionCache.get(key); if (cached) return structuredClone(cached);
-  const result: ScriptOutcome = JSON.parse(evaluateRule(source, program, JSON.stringify({ position, move, start: !move, trace, settings: boardSettings(position), royals: royalTypes(rules), defaults: Object.fromEntries(Object.entries(rules).filter(([, entry]) => entry?.initialData).map(([type, entry]) => [type, entry!.initialData])), types: pieceTypes(rules), promotable: pieceTypes(rules).filter(type => canPromote(type, rules)) }), pieceSources(rules)));
+  const types=pieceTypes(rules),attacks=Object.fromEntries(types.map(type=>[type,{normal:pieceState({type,promoted:false},rules).captures,promoted:canPromote(type,rules)?pieceState({type,promoted:true},rules).captures:[]}]));
+  const result: ScriptOutcome = JSON.parse(evaluateRule(source, program, JSON.stringify({ position, move, start: !move, trace, attacks, settings: boardSettings(position), royals: royalTypes(rules), defaults: Object.fromEntries(Object.entries(rules).filter(([, entry]) => entry?.initialData).map(([type, entry]) => [type, entry!.initialData])), types, promotable: types.filter(type => canPromote(type, rules)) }), pieceSources(rules)));
   if (result.error) throw new RuleScriptError(`ルールスクリプト：${result.error}`, result.trace ?? []);
   if (result.position) {
     if (result.position.width !== position.width || result.position.height !== position.height || result.position.turn !== (move ? position.turn === "sente" ? "gote" : "sente" : position.turn)) throw new Error("ルールが盤面サイズ・手番を不正に変更しました");

@@ -1,5 +1,5 @@
-import { HAND_TYPES, canPromote, pieceState, loadPieceRules, pieceDefinition, pieceTypes, handTypes, isBuiltinPiece, hasPieceLibrary, hasPieceScripts, hasRuleScripts, isRoyal, royalTypes, hasPieceProperties, withInitialData } from "./pieces";
-import { boardSettings, loadBoardSettings } from "./boardsettings";
+import { HAND_TYPES, canPromote, pieceState, loadPieceRules, pieceDefinition, pieceTypes, handTypes, isBuiltinPiece, hasPieceLibrary, hasPieceScripts, hasRuleScripts, isRoyal, royalTypes, hasPieceProperties, withInitialData, hasExtendedPieceRules } from "./pieces";
+import { boardSettings, loadBoardSettings, hasExtendedBoardSettings } from "./boardsettings";
 import type { BoardSettings } from "./boardsettings";
 import type { PieceType, HandType, PieceRules } from "./pieces";
 import { pieceDestinations, traceMovement } from "./movement";
@@ -16,10 +16,10 @@ export interface PassMove { pass: true; choices?: string[] }
 export type GameMove = Move | PassMove;
 export type PassAllowance = Record<Side, number | null>;
 export interface GameOptions { passLimit?: number | null; pieceRules?: PieceRules; ruleScript?: string; trace?: boolean }
-export interface Result { reason: "mate" | "noMoves" | "repetition" | "perpetualCheck" | "resign" | "agreement" | "script"; winner: Side | null }
+export interface Result { reason: "mate" | "noMoves" | "repetition" | "perpetualCheck" | "resign" | "agreement" | "script" | "claim"; winner: Side | null }
 export interface MoveRecord { move: GameMove; side: Side; notation: string; check: boolean; effects?: string[]; trace?: RuleTrace[] }
-interface Frame { position: Position; record: MoveRecord | null; result: Result | null; passesUsed: Record<Side, number> }
-export interface SavedGame { version: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8; moves: GameMove[]; passLimit?: number | null; initialPosition?: Position; pieceRules?: PieceRules; ruleScript?: string; ending?: "resign" | "agreement" }
+interface Frame { position: Position; record: MoveRecord | null; result: Result | null; passesUsed: Record<Side, number>; claimMove?:GameMove }
+export interface SavedGame { version: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9; moves: GameMove[]; passLimit?: number | null; initialPosition?: Position; pieceRules?: PieceRules; ruleScript?: string; ending?: "resign" | "agreement" | "claim"; claimMove?:GameMove }
 export const isPassMove = (move: GameMove): move is PassMove => "pass" in move && move.pass === true;
 export const SIDE_NAMES = { sente: "先手", gote: "後手" };
 export const MIN_BOARD_SIZE = 3, MAX_BOARD_SIZE = 15;
@@ -106,6 +106,17 @@ export function royalResult(position: Position, rules?: PieceRules): Result | nu
   const present = (["sente", "gote"] as Side[]).map(side => position.board.some(piece => piece?.side === side && isRoyal(piece.type, rules)));
   return present.every(Boolean) ? null : { reason: "script", winner: present[0] ? "sente" : present[1] ? "gote" : null };
 }
+/** A script can defer a draw so an immediate mate still wins. */
+export function ruleResult(position:Position,rules:PieceRules={},script="",remaining?:PassAllowance):Result|null {
+  if(!hasRuleScripts(script,rules)||!position.ruleState?.result)return null;
+  if(!position.ruleState.drawUnlessMate)return position.ruleState.result;
+  const royal=royalResult(position,rules);if(royal)return royal;
+  if(inCheck(position,position.turn,rules)) {
+    const probe=clone(position);delete probe.ruleState!.result;delete probe.ruleState!.drawUnlessMate;
+    if(legalActionIterator(probe,remaining,rules,script).next().done)return {reason:"mate",winner:opposite(position.turn)};
+  }
+  return position.ruleState.result;
+}
 function applyUnchecked(position: Position, move: GameMove, rules?: PieceRules): Position {
   const next = clone(position), side = position.turn;
   if (isPassMove(move)) { next.turn = opposite(side); return next; }
@@ -145,7 +156,7 @@ function* boardMoves(position: Position, rules?: PieceRules, ruleScript = ""): G
       const target = position.board[to]; if (target && (target.side === p.side || (isRoyal(target.type, rules) && boardSettings(position).selfCheck))) continue;
       const y = Math.floor(to / position.width), promotion = !p.promoted && canPromote(p.type, rules) && (zone(position, p.side, Math.floor(from / position.width)) || zone(position, p.side, y));
       for (const promote of promotion ? forcedPromotion(position, p, y, rules) ? [true] : [false, true] : [false]) {
-        for (const { move, next } of expandedMoves(position, { from, to, promote }, rules, ruleScript)) if ((hasRuleScripts(ruleScript, rules) && next.ruleState?.result) || royalResult(next, rules) || !inCheck(next, p.side, rules)) yield move;
+        for (const { move, next } of expandedMoves(position, { from, to, promote }, rules, ruleScript)) if ((hasRuleScripts(ruleScript, rules) && next.ruleState?.result && !next.ruleState.drawUnlessMate) || royalResult(next, rules) || !inCheck(next, p.side, rules)) yield move;
       }
     }
   }
@@ -165,8 +176,8 @@ export function* legalMoveIterator(position: Position, rules?: PieceRules, ruleS
       if (forcedPromotion(position, p, y, rules)) continue;
       if (boardSettings(position).nifu && drop === "P" && position.board.some((piece, i) => i % position.width === x && piece?.side === side && piece.type === "P" && !piece.promoted)) continue;
       for (const { move, next } of expandedMoves<Move>(position, { drop, to, promote: false }, rules, ruleScript)) {
-        if (!(hasRuleScripts(ruleScript, rules) && next.ruleState?.result) && inCheck(next, side, rules)) continue;
-        if (boardSettings(position).selfCheck && boardSettings(position).pawnDropMate && !(hasRuleScripts(ruleScript, rules) && next.ruleState?.result) && drop === "P" && attacks(next, to, rules).some(i => next.board[i] && isRoyal(next.board[i]!.type, rules) && next.board[i]?.side === next.turn) && legalMoveIterator(next, rules, ruleScript).next().done) continue;
+        if (!(hasRuleScripts(ruleScript, rules) && next.ruleState?.result && !next.ruleState.drawUnlessMate) && inCheck(next, side, rules)) continue;
+        if (boardSettings(position).selfCheck && boardSettings(position).pawnDropMate && !(hasRuleScripts(ruleScript, rules) && next.ruleState?.result && !next.ruleState.drawUnlessMate) && drop === "P" && attacks(next, to, rules).some(i => next.board[i] && isRoyal(next.board[i]!.type, rules) && next.board[i]?.side === next.turn) && legalMoveIterator(next, rules, ruleScript).next().done) continue;
         yield move;
       }
     }
@@ -180,10 +191,11 @@ export function* legalActionIterator(position: Position, remaining?: PassAllowan
   if (royalResult(position, rules)) return;
   if (hasRuleScripts(ruleScript, rules) && position.ruleState?.result) return;
   yield* legalMoveIterator(position, rules, ruleScript);
-  if (remaining && canPass(position, remaining, rules)) for (const { move, next } of expandedMoves<PassMove>(position, { pass: true }, rules, ruleScript)) if ((hasRuleScripts(ruleScript, rules) && next.ruleState?.result) || !inCheck(next, position.turn, rules)) yield move;
+  if (remaining && canPass(position, remaining, rules)) for (const { move, next } of expandedMoves<PassMove>(position, { pass: true }, rules, ruleScript)) if ((hasRuleScripts(ruleScript, rules) && next.ruleState?.result && !next.ruleState.drawUnlessMate) || !inCheck(next, position.turn, rules)) yield move;
 }
 export function positionKey(position: Position, remaining?: PassAllowance): string {
   const passKey = remaining && (remaining.sente !== null || remaining.gote !== null) ? `|pass:${remaining.sente ?? "-"},${remaining.gote ?? "-"}` : "";
+  if(position.ruleState?.repetitionKey!==undefined)return `${position.width}x${position.height}|script:${position.ruleState.repetitionKey}${passKey}`;
   const customHands = [...new Set([...Object.keys(position.hands.sente), ...Object.keys(position.hands.gote)])].filter(type => !HAND_TYPES.includes(type as typeof HAND_TYPES[number]) && ((position.hands.sente[type as HandType] ?? 0) > 0 || (position.hands.gote[type as HandType] ?? 0) > 0)).sort();
   const customKey = customHands.length ? `|custom:${customHands.map(type => `${type}:${position.hands.sente[type as HandType] ?? 0}:${position.hands.gote[type as HandType] ?? 0}`).join(",")}` : "";
   const dataKey = position.ruleState || position.settings || position.board.some(piece => piece?.data) ? `|rule:${JSON.stringify([position.ruleState, position.board.map(piece => piece?.data ?? null), position.settings])}` : "";
@@ -221,7 +233,8 @@ export class ShogiGame {
       if (!outcome.position) throw new Error(outcome.rejected ?? "対局開始時のルールでは選択を要求できません");
       start = outcome.position; validatePosition(start, this.configuredPieceRules);
     }
-    this.frames = [{ position: start, record: null, result: this.hasScripts ? start.ruleState?.result ?? null : null, passesUsed: { sente: 0, gote: 0 } }];
+    this.frames = [{ position: start, record: null, result: ruleResult(start,this.configuredPieceRules,this.ruleScript,{sente:limit,gote:limit}), passesUsed: { sente: 0, gote: 0 } }];
+    if(!this.result&&boardSettings(start).noMoves==="draw"&&legalActionIterator(start,this.passesRemaining,this.configuredPieceRules,this.ruleScript).next().done)this.frames[0].result={reason:inCheck(start,start.turn,this.configuredPieceRules)?"mate":"noMoves",winner:inCheck(start,start.turn,this.configuredPieceRules)?opposite(start.turn):null};
   }
   get passLimit(): number | null { return this.configuredPassLimit; }
   get pieceRules(): PieceRules { return clone(this.configuredPieceRules); }
@@ -247,6 +260,17 @@ export class ShogiGame {
   get positionHistory(): string[] { return this.frames.map(frame => positionKey(frame.position, this.remainingPasses(frame))); }
   pass(): void { this.play({ pass: true }); }
   get passMoves(): PassMove[] { return this.canPass ? [...expandedMoves<PassMove>(this.position, { pass: true }, this.configuredPieceRules, this.ruleScript)].filter(item => item.next.ruleState?.result || !inCheck(item.next, this.position.turn, this.configuredPieceRules)).map(item => item.move) : []; }
+  get canClaimDraw():boolean{return this.hasScripts&&!this.result&&!!this.position.ruleState?.drawClaim;}
+  get claimableMoves():GameMove[]{
+    if(!this.hasScripts||this.result||!this.position.ruleState?.mayClaimNext)return[];
+    return [...legalActionIterator(this.position,this.passesRemaining,this.configuredPieceRules,this.ruleScript)].filter(move=>{const next=positionAfterLegalMove(this.position,move,this.configuredPieceRules,this.ruleScript);return !!next.ruleState?.drawClaim&&!next.ruleState.result?.winner;});
+  }
+  claimDraw(intended?:GameMove):void{
+    if(this.result)throw new Error("対局は終了しています");
+    if(intended){if(!this.claimableMoves.some(move=>isPassMove(move)?isPassMove(intended)&&JSON.stringify(move.choices??[])===JSON.stringify(intended.choices??[]):!isPassMove(intended)&&move.from===intended.from&&move.to===intended.to&&move.drop===intended.drop&&move.promote===intended.promote&&JSON.stringify(move.choices??[])===JSON.stringify(intended.choices??[])))throw new Error("その手では引き分けを申請できません");}
+    else if(!this.canClaimDraw)throw new Error("引き分けの申請条件を満たしていません");
+    const frame=this.frames.at(-1)!;frame.result={reason:"claim",winner:null};if(intended)frame.claimMove=clone(intended);
+  }
   play(move: GameMove): void {
     this.attemptTrace = [];
     if (this.result) throw new Error("対局は終了しています");
@@ -263,22 +287,23 @@ export class ShogiGame {
       for (const candidate of valid) if (candidate.from === move.from && candidate.drop === move.drop && candidate.to === move.to && candidate.promote === move.promote && JSON.stringify(candidate.choices ?? []) === JSON.stringify(move.choices ?? [])) { found = true; break; }
       if (!found) throw new Error("その手は指せません");
     }
-    const next = positionAfterLegalMove(previous, move, this.configuredPieceRules, this.ruleScript), check = !(this.hasScripts && next.ruleState?.result) && inCheck(next, next.turn, this.configuredPieceRules);
+    const next = positionAfterLegalMove(previous, move, this.configuredPieceRules, this.ruleScript), check = !(this.hasScripts && next.ruleState?.result && !next.ruleState.drawUnlessMate) && inCheck(next, next.turn, this.configuredPieceRules);
     const outcome = this.hasScripts ? runRuleScript(this.ruleScript, previous, this.configuredPieceRules, move, this.traceEnabled) : undefined;
     this.attemptTrace = outcome?.trace ?? [];
     const effects = outcome?.effects;
     const record: MoveRecord = { move: clone(move), side: previous.turn, notation: notation(previous, move, this.configuredPieceRules), check, ...(effects?.length ? { effects } : {}), ...(this.traceEnabled ? { trace: this.attemptTrace } : {}) };
     const passesUsed = { ...this.frames.at(-1)!.passesUsed };
     if (isPassMove(move)) passesUsed[previous.turn]++;
-    const frame: Frame = { position: next, record, result: (this.hasScripts ? next.ruleState?.result : null) ?? royalResult(next, this.configuredPieceRules), passesUsed };
-    if (!frame.result && legalActionIterator(next, this.remainingPasses(frame), this.configuredPieceRules, this.ruleScript).next().done) frame.result = { reason: check ? "mate" : "noMoves", winner: previous.turn };
+    const frame: Frame = { position: next, record, result: ruleResult(next,this.configuredPieceRules,this.ruleScript,this.passesRemaining) ?? royalResult(next, this.configuredPieceRules), passesUsed };
+    if (!frame.result && legalActionIterator(next, this.remainingPasses(frame), this.configuredPieceRules, this.ruleScript).next().done) frame.result = { reason: check ? "mate" : "noMoves", winner: !check&&boardSettings(next).noMoves==="draw"?null:previous.turn };
     this.frames.push(frame); this.attemptTrace = [];
     if (frame.result) return;
     else {
       const key = positionKey(next, this.passesRemaining), matches = this.frames.flatMap((f, i) => positionKey(f.position, this.remainingPasses(f)) === key ? [i] : []);
-      if (matches.length >= 4) {
-        const interval = this.frames.slice(matches.at(-4)! + 1);
-        const checker = (["sente", "gote"] as Side[]).find(side => { const moves = interval.filter(f => f.record?.side === side); return moves.length > 0 && moves.every(f => f.record!.check); });
+      const settings=boardSettings(next),limit=settings.repetitionLimit;
+      if (limit!==null&&matches.length >= limit) {
+        const interval = this.frames.slice(matches.at(-limit)! + 1);
+        const checker = settings.perpetualCheckLoses&&(["sente", "gote"] as Side[]).find(side => { const moves = interval.filter(f => f.record?.side === side); return moves.length > 0 && moves.every(f => f.record!.check); });
         frame.result = checker ? { reason: "perpetualCheck", winner: opposite(checker) } : { reason: "repetition", winner: null };
       }
     }
@@ -286,19 +311,20 @@ export class ShogiGame {
   undo(): boolean {
     this.attemptTrace = [];
     const current = this.frames.at(-1)!;
-    if (current.result?.reason === "resign" || current.result?.reason === "agreement") { current.result = null; return true; }
+    if (current.result?.reason === "resign" || current.result?.reason === "agreement" || current.result?.reason === "claim") { current.result = null;delete current.claimMove; return true; }
     if (this.frames.length === 1) return false;
     this.frames.pop(); return true;
   }
   resign(): void { if (!this.result) this.frames.at(-1)!.result = { reason: "resign", winner: opposite(this.position.turn) }; }
   agreeDraw(): void { if (!this.result) this.frames.at(-1)!.result = { reason: "agreement", winner: null }; }
-  save(): SavedGame { const reason = this.result?.reason, custom = Object.keys(this.configuredPieceRules).length > 0; return { version: this.initialPosition.settings || hasPieceProperties(this.configuredPieceRules) ? 8 : hasPieceScripts(this.configuredPieceRules) ? 7 : this.ruleScript ? 6 : hasPieceLibrary(this.configuredPieceRules) ? 5 : custom ? 4 : 3, initialPosition: this.initialPosition, passLimit: this.passLimit, ...(custom || this.ruleScript || this.initialPosition.settings ? { pieceRules: this.pieceRules } : {}), ...(this.ruleScript ? { ruleScript: this.ruleScript } : {}), moves: this.records.map(r => r.move), ...((reason === "resign" || reason === "agreement") ? { ending: reason } : {}) }; }
+  save(): SavedGame { const reason = this.result?.reason, custom = Object.keys(this.configuredPieceRules).length > 0; return { version: reason==="claim"||hasExtendedBoardSettings(this.initialPosition)||hasExtendedPieceRules(this.configuredPieceRules)?9:this.initialPosition.settings || hasPieceProperties(this.configuredPieceRules) ? 8 : hasPieceScripts(this.configuredPieceRules) ? 7 : this.ruleScript ? 6 : hasPieceLibrary(this.configuredPieceRules) ? 5 : custom ? 4 : 3, initialPosition: this.initialPosition, passLimit: this.passLimit, ...(custom || this.ruleScript || this.initialPosition.settings ? { pieceRules: this.pieceRules } : {}), ...(this.ruleScript ? { ruleScript: this.ruleScript } : {}), moves: this.records.map(r => r.move), ...((reason === "resign" || reason === "agreement" || reason==="claim") ? { ending: reason } : {}), ...(reason==="claim"&&this.frames.at(-1)!.claimMove?{claimMove:clone(this.frames.at(-1)!.claimMove)}:{}) }; }
   static load(data: unknown): ShogiGame {
     if (!data || typeof data !== "object") throw new Error("将棋の保存データではありません");
     const d = data as SavedGame;
-    if (![1, 2, 3, 4, 5, 6, 7, 8].includes(d.version) || !Array.isArray(d.moves) || d.moves.length > 1024 || (d.ending !== undefined && !["resign", "agreement"].includes(d.ending)) || (d.version < 6 && d.ruleScript !== undefined) || (d.version === 6 && !d.ruleScript)) throw new Error("対応していない保存データです");
+    if (![1, 2, 3, 4, 5, 6, 7, 8, 9].includes(d.version) || !Array.isArray(d.moves) || d.moves.length > 1024 || (d.ending !== undefined && !["resign", "agreement", "claim"].includes(d.ending)) || (d.version < 6 && d.ruleScript !== undefined) || (d.version === 6 && !d.ruleScript) || d.ending==="claim"&&d.version<9 || d.claimMove!==undefined&&(d.ending!=="claim"||d.version<9)) throw new Error("対応していない保存データです");
     if ((d.version >= 4 && d.pieceRules === undefined) || (d.version < 4 && d.pieceRules !== undefined)) throw new Error("駒の動きの保存形式が壊れています");
     const pieceRules = loadPieceRules(d.pieceRules);
+    if(d.version<9&&(hasExtendedBoardSettings(d.initialPosition??initialPosition())||hasExtendedPieceRules(pieceRules)))throw new Error("追加の勝敗条件・駒の設定の保存形式が壊れています");
     if (d.version < 8 && (d.initialPosition?.settings !== undefined || hasPieceProperties(pieceRules))) throw new Error("基本ルール・駒の属性の保存形式が壊れています");
     if (d.version < 7 && hasPieceScripts(pieceRules)) throw new Error("駒のルールコードの保存形式が壊れています");
     if (d.version < 5 && hasPieceLibrary(pieceRules)) throw new Error("追加駒・デザインの保存形式が壊れています");
@@ -317,6 +343,7 @@ export class ShogiGame {
       game.play(move);
     }
     if (d.ending === "resign") game.resign(); if (d.ending === "agreement") game.agreeDraw();
+    if(d.ending==="claim")game.claimDraw(d.claimMove);
     return game;
   }
 }

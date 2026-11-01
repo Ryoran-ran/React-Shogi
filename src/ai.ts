@@ -1,4 +1,4 @@
-import { attacks, inCheck, legalActionIterator, isPassMove, positionAfterLegalMove, positionKey, royalResult } from "./shogi";
+import { attacks, inCheck, legalActionIterator, isPassMove, positionAfterLegalMove, positionKey, royalResult, ruleResult } from "./shogi";
 import type { GameMove, PassAllowance, Piece, Position, Side } from "./shogi";
 import { pieceDefinition, handTypes, pieceState, loadPieceRules, hasRuleScripts, isRoyal } from "./pieces";
 import type { PieceRules } from "./pieces";
@@ -6,13 +6,13 @@ import { loadRuleScript, validateRuleScript } from "./rulescript";
 import { boardSettings } from "./boardsettings";
 
 export interface AIOptions { maxDepth?: number; maxNodes?: number; maxTimeMs?: number; previousPositions?: string[]; passesRemaining?: PassAllowance; pieceRules?: PieceRules; ruleScript?: string }
-export interface AISearchResult { move: GameMove | null; depth: number; nodes: number; score: number }
+export interface AISearchResult { move: GameMove | null; depth: number; nodes: number; score: number; claimDraw?:boolean }
 export interface AIRequest { id: number; position: Position; options: AIOptions }
 export type AIReply = { id: number; result: AISearchResult } | { id: number; error: string };
 const MATE = 1000000;
 const valueOf = (piece: Piece, rules?: PieceRules): number => isRoyal(piece.type, rules) ? 20000 : pieceState(piece, rules).value;
 function evaluate(position: Position, rules: PieceRules, ruleScript = ""): number {
-  const result = (hasRuleScripts(ruleScript, rules) ? position.ruleState?.result : null) ?? royalResult(position, rules);
+  const result = ruleResult(position,rules,ruleScript) ?? royalResult(position, rules);
   if (result) return result.winner === null ? 0 : result.winner === position.turn ? MATE : -MATE;
   let score = 0;
   const defended: Record<Side, Map<number, number>> = { sente: new Map(), gote: new Map() };
@@ -24,7 +24,8 @@ function evaluate(position: Position, rules: PieceRules, ruleScript = ""): numbe
     const p = position.board[i]; if (!p) continue;
     const x = i % position.width, y = Math.floor(i / position.width), advance = p.side === "sente" ? position.height - 1 - y : y;
     const center = (position.width - 1) / 2;
-    let value = isRoyal(p.type, rules) ? (position.height - 1 - advance) * 4 : valueOf(p, rules) + advance * (p.type === "P" ? 8 : 3) + (center - Math.abs(center - x)) * 2;
+    const table=rules[p.type]?.aiTable,row=p.side==="sente"?y:position.height-1-y;
+    let value = table ? valueOf(p,rules)+table[Math.round(row/(position.height-1)*(table.length-1))][Math.round(x/(position.width-1)*(table[0].length-1))] : isRoyal(p.type, rules) ? (position.height - 1 - advance) * 4 : valueOf(p, rules) + advance * (p.type === "P" ? 8 : 3) + (center - Math.abs(center - x)) * 2;
     const enemy = defended[p.side === "sente" ? "gote" : "sente"].get(i);
     if (enemy !== undefined && !isRoyal(p.type, rules)) {
       value -= valueOf(p, rules) * (defended[p.side].has(i) ? .12 : .5);
@@ -61,11 +62,12 @@ export function chooseAIMove(position: Position, options: AIOptions = {}): AISea
     if ((hasRuleScripts(ruleScript, rules) && current.ruleState?.result) || royalResult(current, rules)) return evaluate(current, rules, ruleScript);
     if (depth === 0) {
       if (inCheck(current, current.turn, rules) && legalActionIterator(current, remaining, rules, ruleScript).next().done) return -MATE + ply;
+      if(boardSettings(current).noMoves==="draw"&&!inCheck(current,current.turn,rules)&&legalActionIterator(current,remaining,rules,ruleScript).next().done)return 0;
       return evaluate(current, rules, ruleScript);
     }
     const moves: GameMove[] = [];
     for (const move of legalActionIterator(current, remaining, rules, ruleScript)) { checkBudget(); moves.push(move); }
-    if (!moves.length) return -MATE + ply;
+    if (!moves.length) return !inCheck(current,current.turn,rules)&&boardSettings(current).noMoves==="draw"?0:-MATE + ply;
     let best = -Infinity;
     for (const move of ordered(current, moves, rules)) {
       const score = -search(positionAfterLegalMove(current, move, rules, ruleScript), remainingAfter(remaining, current.turn, move), depth - 1, -beta, -alpha, ply + 1);
@@ -77,6 +79,10 @@ export function chooseAIMove(position: Position, options: AIOptions = {}): AISea
   let bestMove = rootMoves[0], bestScore = -Infinity, completedDepth = 0;
   const repeats = new Map<string, number>();
   for (const key of options.previousPositions ?? []) repeats.set(key, (repeats.get(key) ?? 0) + 1);
+  if(Object.values(rules).some(entry=>entry?.aiTable)){
+    const scores=new Map(rootMoves.map(move=>{const next=positionAfterLegalMove(position,move,rules,ruleScript);return[move,-evaluate(next,rules,ruleScript)-(repeats.get(positionKey(next,remainingAfter(options.passesRemaining,position.turn,move)))??0)*35] as const;}));
+    rootMoves.sort((a,b)=>scores.get(b)!-scores.get(a)!);bestMove=rootMoves[0];bestScore=scores.get(bestMove)!;
+  }
   for (let depth = 1; depth <= maxDepth; depth++) {
     let candidate = rootMoves[0], iterationBest = -Infinity, alpha = -Infinity;
     try {
@@ -94,5 +100,6 @@ export function chooseAIMove(position: Position, options: AIOptions = {}): AISea
       if (bestScore > MATE - 1000) break;
     } catch (error) { if (error !== limit) throw error; break; }
   }
+  if(position.ruleState?.drawClaim&&bestScore<-150)return {move:null,claimDraw:true,score:0,depth:completedDepth,nodes};
   return { move: structuredClone(bestMove), score: Number.isFinite(bestScore) ? bestScore : evaluate(position, rules, ruleScript), depth: completedDepth, nodes };
 }
