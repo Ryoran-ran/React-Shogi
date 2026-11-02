@@ -2,6 +2,18 @@
 
 同じ端末で2人が交互に指すほか、簡易AIとの対局やAI同士の動作確認ができる将棋です。盤面の大きさ・初期配置・駒の種類ごとの動きとデザインを編集し、新しい駒も追加できます。
 
+## ブラウザで遊ぶ
+
+[公開版を開く](https://ryoran-ran.github.io/React-Shogi/)
+
+インストールせずにブラウザから遊べます。対局・作成した配置は、使用中のブラウザに保存されます。別の端末へ移すときはJSONファイルに出力してください。
+
+## GitHub Pagesへの公開
+
+`main`へのpushで、GitHub Actionsが型チェック・テスト・ビルドを行い、`dist/`をGitHub Pagesへ公開します。Actionsの「Deploy to GitHub Pages」から手動実行することもできます。公開元はリポジトリのSettings → Pages → Sourceで「GitHub Actions」を選択します。
+
+ローカルで公開用ファイルを作る場合は`bun install --frozen-lockfile`、`bun run build`を実行します。生成物は`dist/`に出力され、ルート直下でも`/React-Shogi/`のようなサブディレクトリでも動きます。通常の将棋、AI対戦、Specialはブラウザだけで実行し、対局用のサーバーは不要です。
+
 ## 起動
 
 Bun が必要です。初回は `bun install` で開発用の型定義を含む依存パッケージをインストールしてください。

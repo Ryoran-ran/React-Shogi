@@ -5,6 +5,7 @@ import { pathToFileURL } from "node:url";
 /** Check the served module graph and run it with browser globals and no Node process object. */
 export async function checkBrowserStartup(baseURL: string, brokenRuntime = false): Promise<{ title: boolean; error: boolean; script: boolean }> {
   const html = await (await fetch(baseURL)).text();
+  const base = new URL("./", baseURL);
   const startup = html.match(/<script type="module">([\s\S]*?)<\/script>/)?.[1];
   if (!startup) throw new Error("起動処理が見つかりません");
   const cacheRoot = resolve(import.meta.dir, "../.check"); mkdirSync(cacheRoot, { recursive: true });
@@ -12,19 +13,20 @@ export async function checkBrowserStartup(baseURL: string, brokenRuntime = false
   const modules = new Set<string>(), scanner = new Bun.Transpiler({ loader: "js" });
   async function download(url: URL): Promise<void> {
     if (modules.has(url.href)) return; modules.add(url.href);
-    if (url.origin !== new URL(baseURL).origin || !/^\/(src|web)\/[a-z]+\.js$/.test(url.pathname)) throw new Error(`想定外のモジュールURL：${url.href}`);
+    const relative = url.pathname.startsWith(base.pathname) ? url.pathname.slice(base.pathname.length) : "";
+    if (url.origin !== base.origin || !/^(src|web)\/[a-z]+\.js$/.test(relative)) throw new Error(`想定外のモジュールURL：${url.href}`);
     const response = await fetch(url);
     if (!response.ok) throw new Error(`読み込みエラー：${response.status} ${url.href}`);
-    const source = brokenRuntime && url.pathname === "/src/scriptvm.js" ? 'export function evaluateRule() {} export function ruleEngineReady() { return false; } export async function prepareRuleEngine() {} throw new Error("Startup runtime unavailable");' : await response.text();
+    const source = brokenRuntime && relative === "src/scriptvm.js" ? 'export function evaluateRule() {} export function ruleEngineReady() { return false; } export async function prepareRuleEngine() {} throw new Error("Startup runtime unavailable");' : await response.text();
     for (const dependency of scanner.scanImports(source)) {
       if (dependency.kind !== "import-statement" && dependency.kind !== "dynamic-import") continue;
       if (!dependency.path.startsWith(".") && !dependency.path.startsWith("/")) throw new Error(`ブラウザーでは解決できないimport：${dependency.path}`);
       await download(new URL(dependency.path, url));
     }
-    const target = resolve(folder, url.pathname.slice(1)); mkdirSync(dirname(target), { recursive: true }); await Bun.write(target, source);
+    const target = resolve(folder, relative); mkdirSync(dirname(target), { recursive: true }); await Bun.write(target, source);
   }
-  await download(new URL("/web/app.js", baseURL));
-  await download(new URL("/src/aiworker.js", baseURL));
+  await download(new URL("web/app.js", base));
+  await download(new URL("src/aiworker.js", base));
   const elements = new Map<string, any>();
   const listeners = new Map<string, (event: any) => void>();
   const element = (selector: string) => {
@@ -39,7 +41,7 @@ export async function checkBrowserStartup(baseURL: string, brokenRuntime = false
   };
   const descriptors = new Map(Object.keys(replacements).map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
   const bootstrap = resolve(folder, "bootstrap.js");
-  await Bun.write(bootstrap, startup.replace('import("/web/app.js")', 'import("./web/app.js")'));
+  await Bun.write(bootstrap, startup);
   try {
     for (const [key, value] of Object.entries(replacements)) Object.defineProperty(globalThis, key, { value, writable: true, configurable: true });
     await import(pathToFileURL(bootstrap).href);
