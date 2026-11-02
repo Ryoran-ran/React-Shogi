@@ -1,10 +1,12 @@
+import {importUI} from "./importui";
+import { mockAIWorkers } from "./mockworker";
 import { expect, test } from "bun:test";
 import { ShogiGame, emptyPosition, legalMoves } from "../src/shogi";
 import { createSetup, readLocalSetups, saveLocalSetup, SETUP_STORAGE_KEY } from "../src/setups";
 import type { GameMove } from "../src/shogi";
 import type { AIRequest } from "../src/ai";
 
-test("title branches into standard shogi and a workshop for new, edit and play without running AI in menus", async () => {
+test("title opens standard shogi, the workshop and Special without running AI in menus", async () => {
   const entryURL = new URL("../web/app.ts", import.meta.url);
   const source = new Bun.Transpiler({ loader: "ts", target: "browser" }).transformSync(await Bun.file(entryURL).text())
     .replace(/(from\s+["'])(\.{1,2}\/[^"']+)(["'])/g, (_match, prefix, path, suffix) => `${prefix}${new URL(path, entryURL).href}${suffix}`)
@@ -16,17 +18,8 @@ test("title branches into standard shogi and a workshop for new, edit and play w
   const p = emptyPosition(5, 7); p.board[34] = { type: "K", side: "sente", promoted: false }; p.board[0] = { type: "K", side: "gote", promoted: false };
   const ready = saveLocalSetup(storage, createSetup(p, 1, "小さな対局"));
   const draft = saveLocalSetup(storage, createSetup(emptyPosition(3, 5), null, "作成中の配置"));
-  const workers: MockWorker[] = [];
-  class MockWorker {
-    request!: AIRequest;
-    onmessage: ((event: any) => void) | null = null;
-    onerror: (() => void) | null = null;
-    terminated = false;
-    constructor() { workers.push(this); }
-    postMessage(request: AIRequest) { this.request = structuredClone(request); }
-    terminate() { this.terminated = true; }
-    reply(move: GameMove = legalMoves(this.request.position)[0]) { this.onmessage?.({ data: { id: this.request.id, result: { move, depth: 1, nodes: 1, score: 0 } } }); }
-  }
+  const {Worker:MockWorker, requests:workers, threads} = mockAIWorkers();
+
   const element = (selector: string) => {
     if (!elements.has(selector)) elements.set(selector, { innerHTML: "", textContent: "", value: "", classList: { add() {}, remove() {} }, focus() {}, click() {}, scrollTop: 0, scrollHeight: 0 });
     return elements.get(selector);
@@ -41,12 +34,19 @@ test("title branches into standard shogi and a workshop for new, edit and play w
   const change = (id: string, value: string) => listeners.change({ target: { id, value } });
   const aiTimers = () => [...timers.entries()].filter(([, timer]) => timer.delay === 250);
   const tickAI = () => { expect(aiTimers()).toHaveLength(1); const [id, timer] = aiTimers()[0]; timers.delete(id); timer.callback(); };
-  const reload = async () => { elements.clear(); listeners = {}; timers.clear(); workers.length = 0; await import(`data:text/javascript;base64,${Buffer.from(`${source}\n// navigation-session ${++session}`).toString("base64")}`); };
+  const reload = async () => { elements.clear(); listeners = {}; timers.clear(); workers.length = 0; await importUI(`${source}\n// navigation-session ${++session}`); };
   const importFile = (text: string) => listeners.change({ target: { id: "workshop-file-input", files: [{ text: async () => text }], value: "" } });
   try {
     await reload(); expect(html()).toContain("遊び方を選んでください");
-    expect(html()).toContain('id="title-standard"'); expect(html()).toContain('id="title-workshop"');
+    expect(html()).toContain('id="title-standard"'); expect(html()).toContain('id="title-workshop"'); expect(html()).toContain('id="title-special"');
     expect(html()).not.toContain('id="title-continue"'); expect(aiTimers()).toHaveLength(0);
+    await click("title-special"); expect(html()).toContain('data-special-game="chess"'); expect(html()).not.toContain('data-special-game="taikyoku-shogi"'); expect(html()).not.toContain("大局将棋"); expect(html()).toContain("編集できます");
+    const beforeSpecial=values.get("shogi-game.v1");
+    await click("",{specialEdit:"taikyoku-shogi"}); expect(element("#toast").textContent).toContain("見つかりません");
+    await click("",{specialEdit:"chess"}); expect(html()).toContain("盤面エディット"); expect(html()).toContain('value="チェス"'); expect(values.get("shogi-game.v1")).toBe(beforeSpecial); await click("editor-cancel");
+    await click("",{specialPlay:"chess"}); expect((html().match(/data-square=/g)??[])).toHaveLength(64);
+    await click("workshop-new"); expect(html()).not.toContain("盤面エディット"); expect(JSON.parse(values.get("shogi-game.v1")!).game.initialPosition.width).toBe(8); expect(aiTimers()).toHaveLength(0);
+    await click("to-title"); await click("title-special");await listeners.keydown({key:"Escape",preventDefault(){}}); expect(html()).toContain("遊び方を選んでください");
     await click("title-standard");
     expect((html().match(/data-square=/g) ?? [])).toHaveLength(81);
     expect(JSON.parse(values.get("shogi-game.v1")!).gameKind).toBe("standard");
@@ -60,6 +60,8 @@ test("title branches into standard shogi and a workshop for new, edit and play w
     await click("title-continue"); tickAI(); workers[1].reply();
     expect(JSON.parse(values.get("shogi-game.v1")!).game.moves).toHaveLength(1);
     await click("to-title"); const originalMatch = values.get("shogi-game.v1");
+    await click("title-special"); expect(values.get("shogi-game.v1")).toBe(originalMatch); expect(aiTimers()).toHaveLength(0);
+    await click("to-title");
     await click("title-workshop"); expect(aiTimers()).toHaveLength(0);
     expect(html()).toContain('id="workshop-new"'); expect(html()).toContain('id="workshop-edit"'); expect(html()).toContain('id="workshop-play"');
     expect(html()).toContain("小さな対局"); expect(html()).toContain("作成途中");

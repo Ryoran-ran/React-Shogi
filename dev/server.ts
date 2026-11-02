@@ -1,11 +1,17 @@
 import { resolve } from "node:path";
 import { readFileSync, statSync } from "node:fs";
-import { buildScriptVM } from "./bundles";
+import { buildScriptVM, buildChessCore } from "./bundles";
 const root = resolve(import.meta.dir, "..");
 const transpiler = new Bun.Transpiler({ loader: "ts", target: "browser" });
 let scriptVM: Promise<string> | undefined, scriptVMTime = -1;
+let chessCore: Promise<string> | undefined, chessCoreTime = -1;
+function currentChessCore(): Promise<string> {
+  const modified = statSync(resolve(root, "src/chesscore.ts")).mtimeMs;
+  if (!chessCore || modified !== chessCoreTime) { chessCoreTime = modified; chessCore = buildChessCore(); }
+  return chessCore;
+}
 function currentScriptVM(): Promise<string> {
-  const modified = statSync(resolve(root, "src/scriptvm.ts")).mtimeMs;
+  const modified = statSync(resolve(root, "src/scriptengine.ts")).mtimeMs;
   if (!scriptVM || modified !== scriptVMTime) { scriptVMTime = modified; scriptVM = buildScriptVM(); }
   return scriptVM;
 }
@@ -13,7 +19,11 @@ const server = Bun.serve({
   hostname: "127.0.0.1", port: Number(process.env.PORT || 5173),
   async fetch(request) {
     const path = new URL(request.url).pathname;
-    if (path === "/src/scriptvm.js") {
+    if (path === "/src/chesscore.js") {
+      try { return new Response(await currentChessCore(), { headers: { "Content-Type": "text/javascript; charset=utf-8", "Cache-Control": "no-store" } }); }
+      catch (error) { return new Response(String(error), { status: 500 }); }
+    }
+    if (path === "/src/scriptengine.js") {
       try { return new Response(await currentScriptVM(), { headers: { "Content-Type": "text/javascript; charset=utf-8", "Cache-Control": "no-store" } }); }
       catch (error) { return new Response(String(error), { status: 500 }); }
     }
@@ -24,7 +34,7 @@ const server = Bun.serve({
         return new Response(output, { headers: { "Content-Type": "text/javascript; charset=utf-8", "Cache-Control": "no-store" } });
       } catch (e) { return new Response(String(e), { status: 500 }); }
     }
-    const files: Record<string, string> = { "/": "web/index.html", "/style.css": "web/style.css" };
+    const files: Record<string, string> = { "/": "web/index.html", "/style.css": "web/style.css", "/third-party-notices.txt": "THIRD_PARTY_NOTICES.txt" };
     if (!files[path]) return new Response("Not found", { status: 404 });
     return new Response(Bun.file(resolve(root, files[path])), { headers: { "Cache-Control": "no-store" } });
   }

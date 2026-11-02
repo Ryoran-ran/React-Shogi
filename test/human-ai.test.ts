@@ -1,3 +1,5 @@
+import {importUI} from "./importui";
+import { mockAIWorkers } from "./mockworker";
 import { expect, test } from "bun:test";
 import { ShogiGame, emptyPosition, legalMoves, positionAfterLegalMove, positionKey } from "../src/shogi";
 import type { GameMove, SavedGame } from "../src/shogi";
@@ -16,17 +18,8 @@ test("human-AI games automatically start, respond, reload, import and resume whi
     if (!elements.has(selector)) elements.set(selector, { innerHTML: "", textContent: "", classList: { add() {}, remove() {} }, focus() {}, scrollTop: 0, scrollHeight: 0 });
     return elements.get(selector);
   };
-  const workers: MockWorker[] = [];
-  class MockWorker {
-    request!: AIRequest;
-    onmessage: ((event: any) => void) | null = null;
-    onerror: (() => void) | null = null;
-    terminated = false;
-    constructor() { workers.push(this); }
-    postMessage(request: AIRequest) { this.request = structuredClone(request); }
-    terminate() { this.terminated = true; }
-    reply(move: GameMove = legalMoves(this.request.position)[0]) { this.onmessage?.({ data: { id: this.request.id, result: { move, depth: 1, nodes: 1, score: 0 } } }); }
-  }
+  const {Worker:MockWorker, requests:workers, threads} = mockAIWorkers();
+
   Object.assign(globalThis, {
     document: { querySelector: element, addEventListener: (name: string, callback: any) => { listeners[name] = callback; } },
     localStorage: { getItem: (key: string) => key === "shogi-game.v1" ? stored : null, setItem: (key: string, value: string) => { if (key === "shogi-game.v1") stored = value; } },
@@ -51,7 +44,7 @@ test("human-AI games automatically start, respond, reload, import and resume whi
   const load = async (data: { game: SavedGame; aiMode: string; aiPaused?: boolean }) => {
     if (listeners.change) await change("ai-mode", "human");
     timers.clear(); elements.clear(); workers.length = 0; listeners = {}; stored = JSON.stringify(data);
-    await import(`data:text/javascript;base64,${Buffer.from(`${appSource}\n// session ${++session}`).toString("base64")}`);
+    await importUI(`${appSource}\n// session ${++session}`);
     expect(aiTimers()).toHaveLength(0); expect(html()).toContain("遊び方を選んでください");
     await click("title-continue");
   };
@@ -62,6 +55,7 @@ test("human-AI games automatically start, respond, reload, import and resume whi
     expect(html()).toContain("自分の手番（AIは自動応手）");
     expect(html()).toMatch(/id="undo" disabled/); // No human move to take back yet.
     await playHuman(); tickAI(); workers[1].reply(); expect(count()).toBe(3);
+    expect(workers[1].worker).toBe(workers[0].worker);expect(workers[0].terminated).toBe(false);
     expect(html()).toContain("↶ 待った");
     await click("undo"); expect(count()).toBe(1); expect(aiTimers()).toHaveLength(0);
 
@@ -84,8 +78,8 @@ test("human-AI games automatically start, respond, reload, import and resume whi
     tickAI(); workers[2].reply(); expect(count()).toBe(5);
 
     await playHuman(); tickAI(); workers[3].onerror?.();
-    expect(aiTimers()).toHaveLength(0); expect(JSON.parse(stored).aiPaused).toBe(true);
-    await click("ai-toggle"); tickAI(); workers[4].reply(); expect(count()).toBe(7);
+    expect(aiTimers()).toHaveLength(0); expect(JSON.parse(stored).aiPaused).toBe(false);expect(count()).toBe(7);
+    await playHuman(); tickAI(); workers[4].reply(); expect(count()).toBe(9);
     await click("edit-board"); await click("editor-apply");
     expect(count()).toBe(0); tickAI(); workers[5].reply(); expect(count()).toBe(1);
 
@@ -118,6 +112,28 @@ test("human-AI games automatically start, respond, reload, import and resume whi
 
     await load({ game: aiTurn, aiMode: "both" }); expect(aiTimers()).toHaveLength(0);
     await click("ai-toggle"); tickAI(); workers[0].reply(); expect(aiTimers()).toHaveLength(1);
+
+    // Missing or unusable responses must still produce a legal move on time.
+    await load({game:new ShogiGame().save(),aiMode:"gote"});tickAI();
+    const silent=workers[0],watchdog=[...timers.entries()].find(([,timer])=>timer.delay===350)!;
+    expect(watchdog).toBeDefined();timers.delete(watchdog[0]);watchdog[1].callback();
+    expect(silent.terminated).toBe(false);expect(count()).toBe(1);expect(JSON.parse(stored).aiPaused).toBe(false);
+    expect(html()).not.toContain("AI 思考中");silent.reply();watchdog[1].callback();expect(count()).toBe(1);
+    await playHuman();tickAI();silent.reply();watchdog[1].callback();
+    expect(count()).toBe(2);expect(html()).toContain("AI 思考中");expect(workers[1].terminated).toBe(false);
+    workers[1].onmessageerror?.();expect(html()).not.toContain("AI 思考中");expect(count()).toBe(3);expect(workers[1].terminated).toBe(true);
+    await playHuman();tickAI();workers[2].onmessage?.({data:{id:workers[2].request.id}});
+    expect(html()).not.toContain("AI 思考中");expect(count()).toBe(5);
+    await playHuman();tickAI();const improved=legalMoves(workers[3].request.position).at(-1)!;
+    workers[3].onmessage?.({data:{id:workers[3].request.id,result:{move:improved,score:10,depth:1,nodes:1},progress:true}});
+    expect(count()).toBe(6);expect(html()).toContain("AI 思考中");
+    const decision=[...timers.entries()].find(([,timer])=>timer.delay===350)!;timers.delete(decision[0]);decision[1].callback();
+    expect(count()).toBe(7);expect(JSON.parse(stored).game.moves.at(-1)).toEqual(improved);workers[3].reply();expect(count()).toBe(7);
+    expect([...timers.values()].some(timer=>timer.delay===350)).toBe(false);
+    await load({game:new ShogiGame().save(),aiMode:"both"});await click("ai-toggle");
+    for(let ply=1;ply<=3;ply++) {tickAI();const timer=[...timers.entries()].find(([,timer])=>timer.delay===350)!;timers.delete(timer[0]);timer[1].callback();expect(count()).toBe(ply);}
+    expect(ShogiGame.load(JSON.parse(stored).game).moveCount).toBe(3);
+
     const finished = new ShogiGame(); finished.resign();
     await load({ game: finished.save(), aiMode: "gote" });
     expect(aiTimers()).toHaveLength(0); expect(workers).toHaveLength(0); expect(html()).toContain('aria-labelledby="result-title"');
@@ -125,4 +141,4 @@ test("human-AI games automatically start, respond, reload, import and resume whi
     if (listeners.change) await change("ai-mode", "human");
     timers.clear(); Object.assign(globalThis, originals);
   }
-});
+},15000);

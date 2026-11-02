@@ -1,8 +1,9 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test, spyOn } from "bun:test";
 import { chooseAIMove } from "../src/ai";
 import type { AIReply } from "../src/ai";
-import { ShogiGame, initialPosition, legalMoves, legalActionIterator, isPassMove, inCheck, positionAfterLegalMove, HAND_TYPES } from "../src/shogi";
+import { ShogiGame, initialPosition, emptyPosition, legalMoves, legalActionIterator, isPassMove, inCheck, positionAfterLegalMove, HAND_TYPES } from "../src/shogi";
 import type { GameMove, Move, PieceType, Position, Side } from "../src/shogi";
+import { createChessPreset } from "../src/presets";
 const at = (x: number, y: number) => y * 9 + x;
 function put(p: Position, x: number, y: number, type: PieceType, side: Side = "sente") { p.board[at(x, y)] = { type, side, promoted: false }; }
 function empty(): Position { const p = initialPosition(); p.board.fill(null); put(p, 8, 8, "K"); put(p, 0, 0, "K", "gote"); return p; }
@@ -15,7 +16,9 @@ function requireBoardMove(move: GameMove | null): Move {
 describe("local shogi AI", () => {
   test("returns legal, repeatable moves without changing the supplied position", () => {
     const p = initialPosition(), original = structuredClone(p);
-    const first = chooseAIMove(p, options), second = chooseAIMove(p, options);
+    const candidates:GameMove[]=[];
+    const first = chooseAIMove(p, options,result=>{if(result.move)candidates.push(result.move);}), second = chooseAIMove(p, options);
+    expect(candidates.length).toBeGreaterThan(0);expect(candidates.every(move=>legalMoves(p).some(valid=>JSON.stringify(valid)===JSON.stringify(move)))).toBe(true);
     expect(legalMoves(p)).toContainEqual(requireBoardMove(first.move));
     expect(second.move).toEqual(first.move); expect(first.depth).toBe(1); expect(p).toEqual(original);
   });
@@ -38,6 +41,18 @@ describe("local shogi AI", () => {
     expect(inCheck(positionAfterLegalMove(p, move), "sente")).toBe(false);
     expect(legalMoves(initialPosition())).toContainEqual(requireBoardMove(chooseAIMove(initialPosition(), { maxNodes: 1, maxTimeMs: 1 }).move));
   });
+  test("time limits interrupt rejected scripted candidates before a legal move is yielded", () => {
+    const p=emptyPosition(15,15);
+    p.board[0]={type:"K",side:"gote",promoted:false};
+    p.board[224]={type:"K",side:"sente",promoted:false};
+    for(let x=0;x<14;x++)p.board[210+x]={type:"R",side:"sente",promoted:false};
+    const before=structuredClone(p);let elapsed=0;
+    const clock=spyOn(performance,"now").mockImplementation(()=>elapsed+=5);
+    try {
+      expect(()=>chooseAIMove(p,{maxTimeMs:10,ruleScript:"export default { validateMove() { return false; } };"})).toThrow("合法手の確認が制限時間を超えました");
+      expect(elapsed).toBeLessThan(1100);expect(p).toEqual(before);
+    } finally {clock.mockRestore();}
+  });
   test("self-play preserves all forty pieces and produces a reloadable record", () => {
     const game = new ShogiGame();
     for (let i = 0; i < 24 && !game.result; i++) {
@@ -56,7 +71,7 @@ describe("local shogi AI", () => {
     try {
       const reply = await new Promise<AIReply>((resolve, reject) => {
         timeout = setTimeout(() => reject(new Error("AI worker timed out")), 4000);
-        worker.onmessage = event => resolve(event.data as AIReply);
+        worker.onmessage = event => { const reply=event.data as AIReply; if (!("result" in reply) || !reply.progress) resolve(reply); };
         worker.onerror = () => reject(new Error("AI worker failed"));
         worker.postMessage({ id: 17, position: initialPosition(), options });
       });
@@ -64,6 +79,25 @@ describe("local shogi AI", () => {
       if ("result" in reply) expect(legalMoves(initialPosition())).toContainEqual(requireBoardMove(reply.result.move));
     } finally { clearTimeout(timeout!); worker.terminate(); }
   });
+  test("fresh workers complete scripted chess turns with the UI's search budget", async () => {
+    const setup=createChessPreset(),game=new ShogiGame(setup.position,{pieceRules:setup.pieceRules,ruleScript:setup.ruleScript,passLimit:0});
+    game.play({from:52,to:36,promote:false});
+    for(let id=30;id<32;id++) {
+      const worker=new Worker(new URL("../src/aiworker.ts",import.meta.url).href,{type:"module"});
+      let timeout:ReturnType<typeof setTimeout>|undefined;
+      try {
+        const reply=await new Promise<AIReply>((resolve,reject)=>{
+          timeout=setTimeout(()=>reject(new Error("Scripted AI worker timed out")),4000);
+          worker.onmessage=event=>{const reply=event.data as AIReply;if (!("result" in reply)||!reply.progress)resolve(reply);};worker.onerror=()=>reject(new Error("Scripted AI worker failed"));
+          worker.postMessage({id,position:game.position,options:{maxDepth:2,maxNodes:1600,maxTimeMs:180,previousPositions:game.positionHistory,passesRemaining:game.passesRemaining,pieceRules:game.pieceRules,ruleScript:game.ruleScript}});
+        });
+        expect(reply.id).toBe(id);expect("result" in reply).toBe(true);
+        if("error" in reply)throw new Error(reply.error);
+        expect(reply.result.move).not.toBeNull();game.play(reply.result.move!);
+      } finally {clearTimeout(timeout);worker.terminate();}
+    }
+    expect(game.moveCount).toBe(3);
+  },10000);
   test("AI can pass when it is the only legal action, and respects exhausted limits and check", () => {
     const p = empty(); put(p, 7, 0, "R", "gote"); put(p, 0, 7, "R", "gote");
     const passesRemaining = { sente: 1, gote: 0 };

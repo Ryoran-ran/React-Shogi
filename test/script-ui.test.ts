@@ -1,3 +1,4 @@
+import {importUI} from "./importui";
 import { expect, test } from "bun:test";
 import { ShogiGame, emptyPosition } from "../src/shogi";
 import { createSetup, readLocalSetups, saveLocalSetup } from "../src/setups";
@@ -40,7 +41,7 @@ test("code editing, validation, apply/cancel, choices, persistence, AI and stand
   const input = (value: string) => listeners.input({ target: { id: "rule-script-source", value } });
   const change = (id: string, value: string) => listeners.change({ target: { id, value } });
   const stored = () => JSON.parse(values.get("shogi-game.v1")!).game;
-  const reload = async () => { elements.clear(); listeners = {}; timers.clear(); await import(`data:text/javascript;base64,${Buffer.from(`${appSource}\n// script-session ${++session}`).toString("base64")}`); };
+  const reload = async () => { elements.clear(); listeners = {}; timers.clear(); await importUI(`${appSource}\n// script-session ${++session}`); };
   const source = 'export default { afterMove(ctx) { if (ctx.actor.type === "P") { ctx.choosePiece(ctx.event.to, ["R", "B"], "変身先を選ぶ"); const power = ctx.choose("追加効果", ["弱", "強"]); ctx.setPieceData(ctx.event.to, { power }); ctx.state.transformed = (ctx.state.transformed ?? 0) + 1; ctx.log("<効果>"); } } };';
   try {
     await reload(); await click("title-workshop"); await click("workshop-edit"); await click("", { workshopEdit: saved.id });

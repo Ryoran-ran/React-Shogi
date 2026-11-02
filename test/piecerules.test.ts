@@ -116,7 +116,7 @@ describe("editable piece rules", () => {
     try {
       const reply = await new Promise<AIReply>((resolve, reject) => {
         timeout = setTimeout(() => reject(new Error("AI worker timed out")), 4000);
-        worker.onmessage = event => resolve(event.data as AIReply); worker.onerror = () => reject(new Error("AI worker failed"));
+        worker.onmessage = event => { const reply=event.data as AIReply; if (!("result" in reply) || !reply.progress) resolve(reply); }; worker.onerror = () => reject(new Error("AI worker failed"));
         worker.postMessage({ id: 91, position, options: { pieceRules: pawn, maxDepth: 1, maxNodes: 1000, maxTimeMs: 5000 } });
       });
       expect(reply.id).toBe(91); expect("result" in reply).toBe(true);

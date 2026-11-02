@@ -1,3 +1,4 @@
+import {importUI} from "./importui";
 import { expect, test } from "bun:test";
 import { ShogiGame, emptyPosition } from "../src/shogi";
 import { createSetup, saveLocalSetup, readLocalSetups } from "../src/setups";
@@ -29,7 +30,7 @@ test("editor test sessions, detailed logs, settings, redo and recovery preserve 
   const change=(id:string,value='',dataset={},checked?:boolean)=>listeners.change({target:{id,value,dataset,checked}});
   const html=()=>element('#app').innerHTML as string;
   const draft=()=>JSON.parse(values.get(EDITOR_DRAFT_KEY)!);
-  const reload=async()=>{elements.clear();listeners={};await import(`data:text/javascript;base64,${Buffer.from(`${source}\n// workshop-session ${++session}`).toString('base64')}`);};
+  const reload=async()=>{elements.clear();listeners={};await importUI(`${source}\n// workshop-session ${++session}`);};
   try {
     await reload(); await click('title-workshop'); await click('workshop-edit'); await click('',{workshopEdit:saved.id});
     expect(html()).toContain('id="editor-test-start"'); expect(draft().snapshot.position.board[40].type).toBe('P');

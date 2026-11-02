@@ -79,7 +79,7 @@ test("piece transformation choices and board victory conditions are both used by
   const selected = chooseAIMove(game.position, options).move!; expect(selected.choices).toEqual(["R"]);
   const worker = new Worker(new URL("../src/aiworker.ts", import.meta.url).href);
   try {
-    const reply = await new Promise<AIReply>((resolve, reject) => { worker.onmessage = event => resolve(event.data); worker.onerror = reject; worker.postMessage({ id: 601, position: game.position, options }); });
+    const reply = await new Promise<AIReply>((resolve, reject) => { worker.onmessage = event => { const reply=event.data as AIReply; if (!("result" in reply) || !reply.progress) resolve(reply); }; worker.onerror = reject; worker.postMessage({ id: 601, position: game.position, options }); });
     expect(reply.id).toBe(601); expect("result" in reply && reply.result.move).toEqual(selected);
   } finally { worker.terminate(); }
   game.play(selected); expect(game.result?.winner).toBe("sente"); expect(game.position.board[4]?.type).toBe("R"); expect(ShogiGame.load(game.save()).ruleScript).toBe(board);

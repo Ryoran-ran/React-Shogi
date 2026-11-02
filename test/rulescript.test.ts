@@ -82,7 +82,7 @@ test("transformation choices are legal action branches for humans, AI and worker
   const worker = new Worker(new URL("../src/aiworker.ts", import.meta.url).href);
   try {
     const response = await new Promise<AIReply>((resolve, reject) => {
-      worker.onmessage = event => resolve(event.data); worker.onerror = reject;
+      worker.onmessage = event => { const reply=event.data as AIReply; if (!("result" in reply) || !reply.progress) resolve(reply); }; worker.onerror = reject;
       worker.postMessage({ id: 401, position: game.position, options });
     });
     expect(response.id).toBe(401); expect("result" in response && response.result.move).toEqual(chosen);
