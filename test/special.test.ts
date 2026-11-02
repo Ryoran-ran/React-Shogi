@@ -7,7 +7,7 @@ import { MAX_SCRIPT_LENGTH } from "../src/scriptconfig";
 import { renderSpecialScreen } from "../src/specialview";
 
 test("Special exposes the implemented chess game while planned games remain unavailable", () => {
-  expect(SPECIAL_GAMES.map(game => [game.id, game.status])).toEqual([["chess", "ready"],["shogi-chess","ready"],["othello","ready"],["hasami","ready"]]);
+  expect(SPECIAL_GAMES.map(game => [game.id, game.status])).toEqual([["chess", "ready"],["shogi-chess","ready"],["wide-shogi","ready"],["othello","ready"],["hasami","ready"]]);
   expect(specialEditorAccess(getSpecialGame("chess")).allowed).toBe(true);
   expect(Object.isFrozen(SPECIAL_GAMES)).toBe(true); expect(Object.isFrozen(getSpecialGame("chess").editor)).toBe(true);
   expect(() => getSpecialGame("unknown")).toThrow("見つかりません");
@@ -45,7 +45,7 @@ test("Special's editor gate checks the actual setup and never treats play-only a
 
 test("Special's catalog enables chess and its editor and explains the editing guidelines", () => {
   const html=renderSpecialScreen(); expect(html).toContain("はさみ将棋で遊べます"); expect(html).toContain("編集できます"); expect(html).not.toContain("大局将棋");
-  for (const id of ["chess","shogi-chess","othello","hasami"]) {
+  for (const id of ["chess","shogi-chess","wide-shogi","othello","hasami"]) {
     expect(html).toContain(`data-special-play="${id}"`); expect(html).not.toContain(`data-special-play="${id}" disabled`); expect(html).toContain(`data-special-edit="${id}"`); expect(html).not.toContain(`data-special-edit="${id}" disabled`);
   }
   expect(html).toContain("3〜15マス"); expect(html).toContain("追加駒は32種類");

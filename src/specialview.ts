@@ -4,7 +4,7 @@ import { escapePieceText as esc } from "./pieceview";
 export function renderSpecialScreen(hasLegacy = false): string {
   const limits = EDITOR_GUIDELINES;
   return `<header class="site-header menu-header"><div class="brand"><span class="brand-icon special-brand-icon">S</span><span>Special<small>OTHER BOARD GAMES</small></span></div><div class="header-tools"><button id="to-title" class="text-button">← タイトルへ</button></div></header>
-    <main class="special-main"><div class="special-heading"><p class="menu-eyebrow">SPECIAL GAMES</p><h1 tabindex="-1">将棋の外にも、遊びを広げる。</h1><p>既存のエディターで作った、将棋以外のゲームを遊べます。</p></div>
+    <main class="special-main"><div class="special-heading"><p class="menu-eyebrow">SPECIAL GAMES</p><h1 tabindex="-1">将棋の外にも、遊びを広げる。</h1><p>既存のエディターで作った、変則将棋や将棋以外のゲームを遊べます。</p></div>
     <p class="special-preparing" role="status">${SPECIAL_GAMES.filter(game=>game.status==="ready").map(game=>esc(game.name)).join("・")}で遊べます。盤面・駒の動き・デザイン・ルールコードを共通のエディターで編集できます。</p>
     <div class="special-game-grid">${SPECIAL_GAMES.map(game => {
       const access = specialEditorAccess(game), reasonId = `special-${game.id}-reason`, playable=game.status==='ready', editable=playable&&access.allowed&&game.editor.policy==='guidelines'&&game.editor.ready;

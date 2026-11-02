@@ -32,6 +32,11 @@ export const SPECIAL_GAMES: readonly SpecialGameDefinition[] = Object.freeze([
     editor:Object.freeze({policy:"guidelines" as const,ready:true,requirements:Object.freeze({width:9,height:9,additionalPieceTypes:6})}),
   }),
   Object.freeze({
+    id: "wide-shogi", name: "横長将棋", emblem: "横", status: "ready" as const,
+    description: "通常サイズの9×9盤と駒置き場に、場外の駒が重なって表示されます。場外用の余白やマス目は増やさず、UIの上へ飛び出した駒も盤内へ戻れます。",
+    editor: Object.freeze({ policy: "guidelines" as const, ready: true, requirements: Object.freeze({ width: 15, height: 9, additionalPieceTypes: 0 }) }),
+  }),
+  Object.freeze({
     id:"othello",name:"オセロ",emblem:"●",status:"ready" as const,
     description:"8×8盤で石を置き、相手の石をはさんで反転します。駒・配置・反転・パス・勝敗を共通エディターの設定とルールコードで作った作例です。",
     editor:Object.freeze({policy:"guidelines" as const,ready:true,requirements:Object.freeze({width:8,height:8,additionalPieceTypes:1})}),

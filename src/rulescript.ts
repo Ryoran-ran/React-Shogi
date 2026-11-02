@@ -94,6 +94,14 @@ function scriptProgram(rules: Record<string, any>, input: string, pieceRules: Re
       state: state.data,
       board: {
         width: p.width, height: p.height,
+        outsideMargin: p.outsideMargin ?? 0,
+        outsideHorizontalOnly: p.outsideHorizontalOnly === true,
+        innerWidth: p.width - (p.outsideMargin ?? 0) * 2,
+        innerHeight: p.height - (p.outsideHorizontalOnly ? 0 : p.outsideMargin ?? 0) * 2,
+        isOutside: (index: number) => {
+          square(index); const margin = p.outsideMargin ?? 0, marginY = p.outsideHorizontalOnly ? 0 : margin, x = index % p.width, y = Math.floor(index / p.width);
+          return x < margin || x >= p.width - margin || y < marginY || y >= p.height - marginY;
+        },
         snapshot: () => copy(p.board),
         isAttacked: (index: number, side: string, board = p.board) => {
           square(index);if(!["sente","gote"].includes(side)||!Array.isArray(board)||board.length!==p.board.length)fail("利きの照会が不正です");

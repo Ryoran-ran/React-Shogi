@@ -1,3 +1,5 @@
+import { boardArea, boardCoordinates, isOutsideSquare, outsideSquareLabel } from "./boardgeometry";
+import type { BoardGeometry } from "./boardgeometry";
 export type SquareColors = Array<string | null>;
 
 export function squareColor(value: unknown): string | null {
@@ -20,5 +22,5 @@ export function squareColorStyle(position: { squareColors?: SquareColors }, inde
 
 export type BoardTheme = "chess";
 export function boardSideMark(position:{boardTheme?:BoardTheme;settings?:{playerRules?:Partial<Record<"sente"|"gote",{mark?:string}>>}},side:"sente"|"gote"):string{return position.settings?.playerRules?.[side]?.mark??(position.boardTheme==="chess"?(side==="sente"?"○":"●"):(side==="sente"?"▲":"△"));}
-export function algebraicSquare(position: {width:number;height:number}, index:number):string{return String.fromCharCode(97+index%position.width)+(position.height-Math.floor(index/position.width));}
+export function algebraicSquare(position: BoardGeometry, index:number):string{if(isOutsideSquare(position,index))return outsideSquareLabel(position,index);const {x,y}=boardCoordinates(position,index);return String.fromCharCode(96+x)+(boardArea(position).height-y+1);}
 export function boardSideName(position:{boardTheme?:BoardTheme;settings?:{playerRules?:Partial<Record<"sente"|"gote",{name?:string}>>}},side:"sente"|"gote"):string{return position.settings?.playerRules?.[side]?.name??(position.boardTheme==="chess"?(side==="sente"?"白":"黒"):(side==="sente"?"先手":"後手"));}

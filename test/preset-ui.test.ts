@@ -37,6 +37,48 @@ async function withUI(run:(ui:any)=>Promise<void>) {
   finally {Object.assign(URL,urls);Object.assign(globalThis,original);}
 }
 
+test('wide shogi opens from Special, uses horizontal outside squares, and supports editing and recovery',async()=>withUI(async ui=>{
+  const {click,change,reload,html,draft,values,storage}=ui;
+  await reload();await click('title-special');expect(html()).toContain('data-special-play="wide-shogi"');
+  await click('',{specialPlay:'wide-shogi'});
+  const match=()=>ShogiGame.load(JSON.parse(values.get('shogi-game.v1')).game);
+  expect(html()).toContain('横長将棋');expect((html().match(/data-square=/g)??[]).length).toBe(135);
+  expect((html().match(/class="square(?: |")/g)??[]).length).toBe(81);
+  expect((html().match(/class="outside-slot(?: |")/g)??[]).length).toBe(54);
+  expect(html()).toContain('--board-width:9;--board-height:9');
+  expect(html()).not.toContain('<span>外</span>');expect(html()).not.toContain('outside-square');
+  expect(html()).toMatch(/class="outside-slot outside-right\s+" data-square="119"/);
+  await click('',{square:'115'});
+  expect(html()).toMatch(/class="outside-slot outside-right[^\"]*legal-target[^\"]*" data-square="119"/);
+  expect(html()).toContain('aria-label="9筋1段 後手 香"');
+  await click('',{square:'119'});expect(match().position.board[119]?.type).toBe('R');
+  expect(html()).toMatch(/class="outside-slot outside-right has-piece[^\"]*" data-square="119"/);
+  await click('',{square:'33'});await click('',{square:'48'});
+  await click('',{square:'119'});await click('',{square:'115'});expect(match().position.board[115]?.type).toBe('R');
+  await click('undo');await reload();await click('title-continue');expect(match().position.board[119]?.type).toBe('R');
+  expect(html()).toContain('場外左右3マス');
+  const savedMatch=values.get('shogi-game.v1');
+  await click('to-title');await click('title-special');await click('',{specialEdit:'wide-shogi'});
+  expect(draft().snapshot.position.outsideHorizontalOnly).toBe(true);
+  expect((html().match(/class="square(?: |")/g)??[]).length).toBe(81);
+  await click('',{editorPiece:'G'});await click('',{editorSquare:'119'});
+  expect(draft().snapshot.position.board[119].type).toBe('G');await click('editor-undo');
+  expect(html()).toContain('id="editor-outside-direction"');
+  await change('editor-outside-margin','2');
+  expect([draft().snapshot.position.width,draft().snapshot.position.height]).toEqual([13,9]);
+  await change('editor-outside-direction','all');
+  expect([draft().snapshot.position.width,draft().snapshot.position.height]).toEqual([13,13]);
+  await click('editor-undo');expect(draft().snapshot.position.outsideHorizontalOnly).toBe(true);
+  await change('editor-height','10');expect(draft().snapshot.position.height).toBe(10);await click('editor-undo');
+  await click('editor-save-local');expect(readLocalSetups(storage)[0].setup.version).toBe(13);
+  await click('editor-test-start');await click('',{square:'100'});await click('',{square:'103'});
+  expect(html()).toContain('2 手目');expect(values.get('shogi-game.v1')).toBe(savedMatch);
+  await click('editor-test-back');await reload();await click('editor-restore-draft');
+  expect(draft().snapshot.position.outsideHorizontalOnly).toBe(true);expect(draft().snapshot.position.height).toBe(9);
+  await click('editor-apply');expect(match().save().version).toBe(15);expect(match().position.width).toBe(13);
+  expect(html()).toContain('場外左右2マス');
+}));
+
 test('Hasami uses shared piece/code editing, draft recovery, saves, test play, AI and capture rendering',async()=>withUI(async ui=>{
   const {click,input,change,reload,html,draft,values,storage,downloads,tickAI,workers}=ui;
   await reload();await click('title-special');await click('',{specialEdit:'hasami'});

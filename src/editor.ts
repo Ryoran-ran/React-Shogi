@@ -8,6 +8,7 @@ import type { ScriptData } from "./scriptconfig";
 import { boardSettings, configuredBoardSettings } from "./boardsettings";
 import type { BoardSettings, PlayerRuleOverrides } from "./boardsettings";
 import { squareColor, validateSquareColors } from "./boarddesign";
+import { boardArea, MAX_OUTSIDE_MARGIN, verticalOutsideMargin } from "./boardgeometry";
 export interface EditorSnapshot { position: Position; rules: PieceRules; script: string }
 export interface PieceRegion { width: number; height: number; cells: Array<Piece | null>; squareColors?: Array<string | null> }
 
@@ -38,6 +39,8 @@ export class BoardEditor {
   resize(width: number, height: number): void {
     validateBoardSize(width, height);
     const next = emptyPosition(width, height);
+    if (this.draft.outsideMargin) next.outsideMargin = this.draft.outsideMargin;
+    if (this.draft.outsideHorizontalOnly) next.outsideHorizontalOnly = true;
     if(this.draft.boardTheme)next.boardTheme=this.draft.boardTheme;
     next.turn = this.draft.turn; next.hands = structuredClone(this.draft.hands);
     if (this.draft.settings) next.settings = { ...this.draft.settings, promotionDepth: this.draft.settings.promotionDepth === null ? null : Math.min(height, this.draft.settings.promotionDepth) };
@@ -45,6 +48,28 @@ export class BoardEditor {
     for (let y = 0; y < Math.min(height, this.draft.height); y++) for (let x = 0; x < Math.min(width, this.draft.width); x++) {
       next.board[y * width + x] = this.draft.board[y * this.draft.width + x];
       if (next.squareColors) next.squareColors[y * width + x] = this.draft.squareColors![y * this.draft.width + x];
+    }
+    if (next.squareColors?.every(color => color === null)) delete next.squareColors;
+    this.commit(next);
+  }
+  setOutsideMargin(margin: number, horizontalOnly = this.draft.outsideHorizontalOnly === true): void {
+    if (!Number.isInteger(margin) || margin < 0 || margin > MAX_OUTSIDE_MARGIN) throw new Error("場外エリアは0〜3マスで設定してください");
+    const area = boardArea(this.draft), marginY = horizontalOnly ? 0 : margin, width = area.width + margin * 2, height = area.height + marginY * 2;
+    if (margin === area.margin && marginY === verticalOutsideMargin(this.draft)) return;
+    validateBoardSize(width, height);
+    const next = this.position, offsetX = margin - area.margin, offsetY = marginY - verticalOutsideMargin(this.draft);
+    next.width = width; next.height = height; next.board = Array(width * height).fill(null);
+    if (margin) next.outsideMargin = margin; else delete next.outsideMargin;
+    if (margin && horizontalOnly) next.outsideHorizontalOnly = true; else delete next.outsideHorizontalOnly;
+    if (next.squareColors) next.squareColors = Array(width * height).fill(null);
+    for (let y = 0; y < this.draft.height; y++) for (let x = 0; x < this.draft.width; x++) {
+      const nx = x + offsetX, ny = y + offsetY, source = y * this.draft.width + x;
+      if (nx < 0 || ny < 0 || nx >= width || ny >= height) {
+        if (this.draft.board[source]) throw new Error("縮小する場外エリアに駒があります。駒を移動するか取り除いてください");
+        continue;
+      }
+      next.board[ny * width + nx] = this.draft.board[source];
+      if (next.squareColors) next.squareColors[ny * width + nx] = this.draft.squareColors![source];
     }
     if (next.squareColors?.every(color => color === null)) delete next.squareColors;
     this.commit(next);
@@ -57,7 +82,7 @@ export class BoardEditor {
     this.commit(next);
   }
   setTurn(side: Side): void { const next = this.position; next.turn = side; this.commit(next); }
-  clear(): void { const next = emptyPosition(this.draft.width, this.draft.height); next.turn = this.draft.turn; if(this.draft.boardTheme)next.boardTheme=this.draft.boardTheme; if (this.draft.settings) next.settings = structuredClone(this.draft.settings); if(this.draft.squareColors)next.squareColors=[...this.draft.squareColors]; this.commit(next); }
+  clear(): void { const next = emptyPosition(this.draft.width, this.draft.height); next.turn = this.draft.turn; if(this.draft.outsideMargin)next.outsideMargin=this.draft.outsideMargin; if(this.draft.outsideHorizontalOnly)next.outsideHorizontalOnly=true; if(this.draft.boardTheme)next.boardTheme=this.draft.boardTheme; if (this.draft.settings) next.settings = structuredClone(this.draft.settings); if(this.draft.squareColors)next.squareColors=[...this.draft.squareColors]; this.commit(next); }
   setBoardTheme(theme:"shogi"|"chess"):void {if(!["shogi","chess"].includes(theme))throw new Error("表示スタイルを選んでください");const next=this.position;if(theme==="chess")next.boardTheme=theme;else delete next.boardTheme;this.commit(next);}
   setSquareColor(index: number, color: string | null): void {
     const next = this.position;
